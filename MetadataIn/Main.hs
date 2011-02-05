@@ -237,7 +237,6 @@ gotBeginElement ioRef elementName' attributes' = do
                                $ attributeContent attribute))
               attributes'
   parseState <- readIORef ioRef
-  putStrLn $ "<" ++ elementName ++ ">"
   let framework = parseStateFramework parseState
       currentFunction = parseStateCurrentFunction parseState
       (framework', currentFunction')
@@ -322,7 +321,7 @@ gotBeginElement ioRef elementName' attributes' = do
               case currentFunction of
                 Nothing -> (framework, currentFunction)
                 Just _ ->
-                  let theName = fromJust $ lookup "name" attributes
+                  let theName = fromMaybe "argument" $ lookup "name" attributes
                       maybeType32 = lookup "type" attributes
                       maybeType64 = lookup "type64" attributes
                       theType = head $ catMaybes [maybeType64,
@@ -348,7 +347,6 @@ gotEndElement :: IORef ParseState -> Name-> IO Bool
 gotEndElement ioRef elementName' = do
   let elementName = TL.unpack $ nameLocalName $ elementName'
   parseState <- readIORef ioRef
-  putStrLn $ "</" ++ elementName ++ ">"
   let framework = parseStateFramework parseState
       currentFunction = parseStateCurrentFunction parseState
       (framework', currentFunction')
