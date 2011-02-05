@@ -1,0 +1,22 @@
+Name:                MetadataIn
+Version:             1.0
+Cabal-version:       >=1.2
+Build-type:          Simple
+Author:              Dan Knapp
+Maintainer:          dankna@gmail.com
+Homepage:            http://dankna.com/software/
+License:             BSD3
+License-file:        LICENSE
+Category:            System
+Synopsis:            Reads metadata from Mac OS X frameworks.
+Description:
+  Reads metadata from Mac OS X frameworks, generating appropriate Haskell types for
+  them.  Uses the BridgeSupport files included with the operating system to do so.
+
+Executable MetadataIn
+  Main-is: Main.hs
+  Build-depends: base >= 4.3.1.0 && < 5,
+                 directory >= 1.1.0.0 && < 2,
+                 direct-xml-expat >= 1.0 && < 2,
+                 bytestring >= 0.9.1.10 && < 1,
+                 text >= 0.11.0.2 && < 1
