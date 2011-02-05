@@ -19,44 +19,48 @@ import Text.XML.Expat.SAX
 data Framework = Framework {
     frameworkName :: String,
     frameworkDependencies :: [String],
-    frameworkTypes :: [Type],
-    frameworkConstants :: [Constant],
-    frameworkEnums :: [Enum]
+    frameworkTypes :: [TypeDefinition],
+    frameworkConstants :: [ConstantDefinition],
+    frameworkEnums :: [EnumDefinition],
+    frameworkFunctions :: [FunctionDefinition]
   }
   deriving (Show)
 
 
-data Type = OpaqueType String String Bool
-          deriving (Show)
+data TypeDefinition = OpaqueType String String Bool
+                    deriving (Show)
 
 
-data Constant = Constant String String String Bool
-              deriving (Show)
+data TypeReference = Type String String
+                   | Void
+                   deriving (Show)
 
 
-data Enum = IntEnum String Int64
-          | FloatEnum String Double
-          deriving (Show)
+data ConstantDefinition = Constant String TypeReference Bool
+                        deriving (Show)
+
+
+data EnumDefinition = IntEnum String Int64
+                    | FloatEnum String Double
+                    deriving (Show)
+
+
+data FunctionDefinition = Function String
+                                   TypeReference
+                                   [(String, TypeReference)]
+                        deriving (Show)
 
 
 data ParseState = ParseState {
-    parseStateFramework :: Framework
+    parseStateFramework :: Framework,
+    parseStateCurrentFunction :: Maybe FunctionDefinition
   }
 
 
 main :: IO ()
 main = do
   frameworks <- processFramework "Cocoa"
-  mapM_ (\framework -> do
-           putStrLn $ "In " ++ frameworkName framework ++ ":"
-           mapM_ (\enum -> do
-                    case enum of
-                      IntEnum theName theValue -> do
-                        putStrLn $ "  IntEnum " ++ theName ++ " " ++ show theValue
-                      FloatEnum theName theValue -> do
-                        putStrLn $ "  FloatEnum " ++ theName ++ " " ++ show theValue)
-                 $ frameworkEnums framework)
-       frameworks
+  putStrLn $ show frameworks
 
 
 processFramework :: String -> IO [Framework]
@@ -194,10 +198,13 @@ loadBridgeSupport :: String -> FilePath -> IO Framework
 loadBridgeSupport frameworkName location = do
   ioRef <- newIORef $ ParseState {
                                parseStateFramework
-                                 = emptyFramework frameworkName
+                                 = emptyFramework frameworkName,
+                               parseStateCurrentFunction
+                                 = Nothing
                              }
   parser <- newParser error
   setCallback parser parsedBeginElement $ gotBeginElement ioRef
+  setCallback parser parsedEndElement $ gotEndElement ioRef
   bytes <- BS.readFile location
   parseBytes parser bytes
   parseComplete parser
@@ -211,7 +218,8 @@ emptyFramework name = Framework {
                         frameworkDependencies = [],
                         frameworkTypes = [],
                         frameworkConstants = [],
-                        frameworkEnums = []
+                        frameworkEnums = [],
+                        frameworkFunctions = []
                       }
 
 
@@ -229,15 +237,18 @@ gotBeginElement ioRef elementName' attributes' = do
                                $ attributeContent attribute))
               attributes'
   parseState <- readIORef ioRef
+  putStrLn $ "<" ++ elementName ++ ">"
   let framework = parseStateFramework parseState
-      framework'
+      currentFunction = parseStateCurrentFunction parseState
+      (framework', currentFunction')
         = case elementName of
             "depends_on" -> let dependency = fromJust $ lookup "path" attributes
-                            in framework {
-                                   frameworkDependencies
-                                     = frameworkDependencies framework
-                                       ++ [dependency]
-                                 }
+                            in (framework {
+                                    frameworkDependencies
+                                      = frameworkDependencies framework
+                                        ++ [dependency]
+                                  },
+                                currentFunction)
             "opaque" -> let theName = fromJust $ lookup "name" attributes
                             maybeType32 = lookup "type" attributes
                             maybeType64 = lookup "type64" attributes
@@ -246,11 +257,12 @@ gotBeginElement ioRef elementName' attributes' = do
                             isMagic = case lookup "magic_cookie" attributes of
                                         Just "true" -> True
                                         _ -> False
-                        in framework {
-                               frameworkTypes
-                                 = frameworkTypes framework
-                                   ++ [OpaqueType theName theType isMagic]
-                             }
+                        in (framework {
+                                frameworkTypes
+                                  = frameworkTypes framework
+                                    ++ [OpaqueType theName theType isMagic]
+                              },
+                            currentFunction)
             "constant" -> let theName = fromJust $ lookup "name" attributes
                               maybeType32 = lookup "type" attributes
                               maybeType64 = lookup "type64" attributes
@@ -261,14 +273,14 @@ gotBeginElement ioRef elementName' attributes' = do
                                           _ -> False
                               declaredType
                                 = fromJust $ lookup "declared_type" attributes
-                          in framework {
-                                 frameworkConstants
-                                   = frameworkConstants framework
-                                     ++ [Constant theName
-                                                  theType
-                                                  declaredType
-                                                  isMagic]
-                               }
+                          in (framework {
+                                  frameworkConstants
+                                    = frameworkConstants framework
+                                      ++ [Constant theName
+                                                   (Type theType declaredType)
+                                                   isMagic]
+                                },
+                              currentFunction)
             "enum" -> let theName = fromJust $ lookup "name" attributes
                           maybeValue32 = lookup "value" attributes
                           maybeValue64 = lookup "value64" attributes
@@ -281,14 +293,76 @@ gotBeginElement ioRef elementName' attributes' = do
                           enum = if elem '.' theValue
                                    then FloatEnum theName (read theValue)
                                    else IntEnum theName (read theValue)
-                      in framework {
-                             frameworkEnums
-                               = frameworkEnums framework
-                                 ++ [enum]
-                           }
-            _ -> framework
+                      in (framework {
+                              frameworkEnums
+                                = frameworkEnums framework
+                                  ++ [enum]
+                            },
+                          currentFunction)
+            "function" -> let theName = fromJust $ lookup "name" attributes
+                          in (framework,
+                              Just $ Function theName Void [])
+            "retval" -> 
+              case currentFunction of
+                Nothing -> (framework, currentFunction)
+                Just _ ->
+                  let maybeType32 = lookup "type" attributes
+                      maybeType64 = lookup "type64" attributes
+                      theType = head $ catMaybes [maybeType64,
+                                                  maybeType32]
+                      declaredType
+                        = fromJust $ lookup "declared_type" attributes
+                      Just (Function functionName _ arguments)
+                        = currentFunction
+                  in (framework,
+                      Just $ Function functionName
+                                      (Type theType declaredType)
+                                      arguments)
+            "arg" ->
+              case currentFunction of
+                Nothing -> (framework, currentFunction)
+                Just _ ->
+                  let theName = fromJust $ lookup "name" attributes
+                      maybeType32 = lookup "type" attributes
+                      maybeType64 = lookup "type64" attributes
+                      theType = head $ catMaybes [maybeType64,
+                                                  maybeType32]
+                      declaredType
+                        = fromJust $ lookup "declared_type" attributes
+                      argument = (theName, Type theType declaredType)
+                      Just (Function functionName returnType arguments)
+                        = currentFunction
+                  in (framework,
+                      Just $ Function functionName
+                                      returnType
+                                      (arguments ++ [argument]))
+            _ -> (framework, currentFunction)
   writeIORef ioRef $ parseState {
-                          parseStateFramework = framework'
+                          parseStateFramework = framework',
+                          parseStateCurrentFunction = currentFunction'
+                       }
+  return True
+
+
+gotEndElement :: IORef ParseState -> Name-> IO Bool
+gotEndElement ioRef elementName' = do
+  let elementName = TL.unpack $ nameLocalName $ elementName'
+  parseState <- readIORef ioRef
+  putStrLn $ "</" ++ elementName ++ ">"
+  let framework = parseStateFramework parseState
+      currentFunction = parseStateCurrentFunction parseState
+      (framework', currentFunction')
+        = case elementName of
+            "function" -> (framework {
+                               frameworkFunctions
+                                 = frameworkFunctions framework
+                                   ++ [fromJust currentFunction]
+                             },
+                           Nothing)
+            _ -> (framework, currentFunction)
+  writeIORef ioRef $ parseState {
+                          parseStateFramework = framework',
+                          parseStateCurrentFunction = currentFunction'
                        }
   return True
 
