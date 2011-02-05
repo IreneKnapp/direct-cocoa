@@ -3,11 +3,12 @@ module Main (main) where
 import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.Int
 import Data.IORef
 import qualified Data.List as L
 import Data.Maybe
 import qualified Data.Text.Lazy as TL
-import Prelude hiding (error)
+import Prelude hiding (error, Enum)
 import System.Directory
 import System.Exit
 import System.Environment
@@ -17,9 +18,25 @@ import Text.XML.Expat.SAX
 
 data Framework = Framework {
     frameworkName :: String,
-    frameworkDependencies :: [String]
+    frameworkDependencies :: [String],
+    frameworkTypes :: [Type],
+    frameworkConstants :: [Constant],
+    frameworkEnums :: [Enum]
   }
   deriving (Show)
+
+
+data Type = OpaqueType String String Bool
+          deriving (Show)
+
+
+data Constant = Constant String String String Bool
+              deriving (Show)
+
+
+data Enum = IntEnum String Int64
+          | FloatEnum String Double
+          deriving (Show)
 
 
 data ParseState = ParseState {
@@ -30,7 +47,16 @@ data ParseState = ParseState {
 main :: IO ()
 main = do
   frameworks <- processFramework "Cocoa"
-  putStrLn $ show frameworks
+  mapM_ (\framework -> do
+           putStrLn $ "In " ++ frameworkName framework ++ ":"
+           mapM_ (\enum -> do
+                    case enum of
+                      IntEnum theName theValue -> do
+                        putStrLn $ "  IntEnum " ++ theName ++ " " ++ show theValue
+                      FloatEnum theName theValue -> do
+                        putStrLn $ "  FloatEnum " ++ theName ++ " " ++ show theValue)
+                 $ frameworkEnums framework)
+       frameworks
 
 
 processFramework :: String -> IO [Framework]
@@ -182,7 +208,10 @@ loadBridgeSupport frameworkName location = do
 emptyFramework :: String -> Framework
 emptyFramework name = Framework {
                         frameworkName = name,
-                        frameworkDependencies = []
+                        frameworkDependencies = [],
+                        frameworkTypes = [],
+                        frameworkConstants = [],
+                        frameworkEnums = []
                       }
 
 
@@ -209,6 +238,54 @@ gotBeginElement ioRef elementName' attributes' = do
                                      = frameworkDependencies framework
                                        ++ [dependency]
                                  }
+            "opaque" -> let theName = fromJust $ lookup "name" attributes
+                            maybeType32 = lookup "type" attributes
+                            maybeType64 = lookup "type64" attributes
+                            theType = head $ catMaybes [maybeType64,
+                                                        maybeType32]
+                            isMagic = case lookup "magic_cookie" attributes of
+                                        Just "true" -> True
+                                        _ -> False
+                        in framework {
+                               frameworkTypes
+                                 = frameworkTypes framework
+                                   ++ [OpaqueType theName theType isMagic]
+                             }
+            "constant" -> let theName = fromJust $ lookup "name" attributes
+                              maybeType32 = lookup "type" attributes
+                              maybeType64 = lookup "type64" attributes
+                              theType = head $ catMaybes [maybeType64,
+                                                          maybeType32]
+                              isMagic = case lookup "magic_cookie" attributes of
+                                          Just "true" -> True
+                                          _ -> False
+                              declaredType
+                                = fromJust $ lookup "declared_type" attributes
+                          in framework {
+                                 frameworkConstants
+                                   = frameworkConstants framework
+                                     ++ [Constant theName
+                                                  theType
+                                                  declaredType
+                                                  isMagic]
+                               }
+            "enum" -> let theName = fromJust $ lookup "name" attributes
+                          maybeValue32 = lookup "value" attributes
+                          maybeValue64 = lookup "value64" attributes
+                          maybeLEValue = lookup "le_value" attributes
+                          maybeBEValue = lookup "be_value" attributes
+                          theValue = head $ catMaybes [maybeValue64,
+                                                       maybeValue32,
+                                                       maybeLEValue,
+                                                       maybeBEValue]
+                          enum = if elem '.' theValue
+                                   then FloatEnum theName (read theValue)
+                                   else IntEnum theName (read theValue)
+                      in framework {
+                             frameworkEnums
+                               = frameworkEnums framework
+                                 ++ [enum]
+                           }
             _ -> framework
   writeIORef ioRef $ parseState {
                           parseStateFramework = framework'
