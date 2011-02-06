@@ -12,6 +12,8 @@ Synopsis:            Reads metadata from Mac OS X frameworks.
 Description:
   Reads metadata from Mac OS X frameworks, generating appropriate Haskell types for
   them.  Uses the BridgeSupport files included with the operating system to do so.
+  Note that although the support is there for 32-bit and/or big-endian architectures,
+  currently I am only testing with 64-bit little-endian architectures.
 
 Executable MetadataIn
   Main-is: Main.hs
@@ -19,4 +21,5 @@ Executable MetadataIn
                  directory >= 1.1.0.0 && < 2,
                  direct-xml-expat >= 1.0 && < 2,
                  bytestring >= 0.9.1.10 && < 1,
-                 text >= 0.11.0.2 && < 1
+                 text >= 0.11.0.2 && < 1,
+                 syb >= 0.3 && < 1

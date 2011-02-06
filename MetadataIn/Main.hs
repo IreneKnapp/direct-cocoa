@@ -1,19 +1,34 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 module Main (main) where
 
 import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.Char
+import Data.Generics
 import Data.Int
 import Data.IORef
 import qualified Data.List as L
 import Data.Maybe
 import qualified Data.Text.Lazy as TL
 import Prelude hiding (error, Enum)
+import qualified Prelude as Prelude
 import System.Directory
 import System.Exit
 import System.Environment
 import System.IO
 import Text.XML.Expat.SAX
+
+
+data Architecture = Architecture BitSize Endianness
+
+
+data BitSize = ThirtyTwoBit
+             | SixtyFourBit
+
+
+data Endianness = LittleEndian
+                | BigEndian
 
 
 data Framework = Framework {
@@ -22,36 +37,85 @@ data Framework = Framework {
     frameworkTypes :: [TypeDefinition],
     frameworkConstants :: [ConstantDefinition],
     frameworkEnums :: [EnumDefinition],
-    frameworkFunctions :: [FunctionDefinition]
+    frameworkFunctions :: [FunctionDefinition],
+    frameworkFunctionAliases :: [FunctionAliasDefinition]
   }
-  deriving (Show)
+  deriving (Show, Data, Typeable)
 
 
-data TypeDefinition = OpaqueType String String Bool
-                    deriving (Show)
+data LinkageType = CharLinkageType
+                 | Int8LinkageType
+                 | Int16LinkageType
+                 | Int32LinkageType
+                 | Int64LinkageType
+                 | Word8LinkageType
+                 | Word16LinkageType
+                 | Word32LinkageType
+                 | Word64LinkageType
+                 | FloatLinkageType
+                 | DoubleLinkageType
+                 | BoolLinkageType
+                 | VoidLinkageType
+                 | CStringLinkageType
+                 | ObjectLinkageType
+                 | ClassLinkageType
+                 | SelectorLinkageType
+                 | ArrayLinkageType Int LinkageType
+                 | StructureLinkageType String
+                                        (Maybe [(Maybe String, LinkageType)])
+                 | UnionLinkageType String
+                                    [(Maybe String, LinkageType)]
+                 | BitfieldLinkageType Int
+                 | PointerLinkageType LinkageType
+                 | UnknownLinkageType
+                 | QualifiedLinkageType [LinkageQualifier] LinkageType
+                 deriving (Show, Data, Typeable)
 
 
-data TypeReference = Type String String
+data LinkageQualifier = ConstQualifier
+                      | InQualifier
+                      | InOutQualifier
+                      | OutQualifier
+                      | ByCopyQualifier
+                      | ByReferenceQualifier
+                      | OneWayQualifier
+                      deriving (Show, Data, Typeable)
+
+data DeclaredType = DeclaredType String
+                  deriving (Show, Data, Typeable)
+
+
+data TypeDefinition = OpaqueType String LinkageType Bool
+                    | StructureType String LinkageType Bool
+                    deriving (Show, Data, Typeable)
+
+
+data TypeReference = Type LinkageType (Maybe DeclaredType)
                    | Void
-                   deriving (Show)
+                   deriving (Show, Data, Typeable)
 
 
 data ConstantDefinition = Constant String TypeReference Bool
-                        deriving (Show)
+                        deriving (Show, Data, Typeable)
 
 
 data EnumDefinition = IntEnum String Int64
                     | FloatEnum String Double
-                    deriving (Show)
+                    deriving (Show, Data, Typeable)
 
 
 data FunctionDefinition = Function String
                                    TypeReference
                                    [(String, TypeReference)]
-                        deriving (Show)
+                        deriving (Show, Data, Typeable)
+
+
+data FunctionAliasDefinition = FunctionAlias String String
+                             deriving (Show, Data, Typeable)
 
 
 data ParseState = ParseState {
+    parseStateArchitecture :: Architecture,
     parseStateFramework :: Framework,
     parseStateCurrentFunction :: Maybe FunctionDefinition
   }
@@ -59,12 +123,17 @@ data ParseState = ParseState {
 
 main :: IO ()
 main = do
-  frameworks <- processFramework "Cocoa"
-  putStrLn $ show frameworks
+  let architecture = Architecture SixtyFourBit LittleEndian
+  frameworks <- processFramework architecture "Cocoa"
+  everywhereM (mkM $ \linkageType -> do
+                 putStrLn $ show (linkageType :: LinkageType)
+                 return linkageType)
+              frameworks
+  putStrLn $ "All done!"
 
 
-processFramework :: String -> IO [Framework]
-processFramework frameworkName = do
+processFramework :: Architecture -> String -> IO [Framework]
+processFramework architecture frameworkName = do
   let recoverFrameworkName :: FilePath -> String
       recoverFrameworkName frameworkLocation =
         let lastComponent = case L.elemIndices '/' frameworkLocation of
@@ -89,7 +158,9 @@ processFramework frameworkName = do
               Just bridgeSupportLocation -> do
                 putStrLn $ "Processing " ++ frameworkName ++ "."
                 framework
-                  <- loadBridgeSupport frameworkName bridgeSupportLocation
+                  <- loadBridgeSupport architecture
+                                       frameworkName
+                                       bridgeSupportLocation
                 visitedFrameworkNames
                   <- return $ visitedFrameworkNames ++ [frameworkName]
                 (dependencies, visitedFrameworkNames)
@@ -124,7 +195,7 @@ processFramework frameworkName = do
   bridgeSupportLocation
     <- findBridgeSupportOrError frameworkName frameworkLocation
   framework
-    <- loadBridgeSupport frameworkName bridgeSupportLocation
+    <- loadBridgeSupport architecture frameworkName bridgeSupportLocation
   (dependencies, _) <- chaseDependencies framework [frameworkName]
   framework <- return $ fixDependencyNames framework
   return $ [framework] ++ dependencies
@@ -194,14 +265,16 @@ findBridgeSupportOrError frameworkName frameworkLocation = do
     Just location -> return location
 
 
-loadBridgeSupport :: String -> FilePath -> IO Framework
-loadBridgeSupport frameworkName location = do
+loadBridgeSupport :: Architecture -> String -> FilePath -> IO Framework
+loadBridgeSupport architecture frameworkName location = do
   ioRef <- newIORef $ ParseState {
-                               parseStateFramework
-                                 = emptyFramework frameworkName,
-                               parseStateCurrentFunction
-                                 = Nothing
-                             }
+                          parseStateArchitecture
+                            = architecture,
+                          parseStateFramework
+                            = emptyFramework frameworkName,
+                          parseStateCurrentFunction
+                            = Nothing
+                        }
   parser <- newParser error
   setCallback parser parsedBeginElement $ gotBeginElement ioRef
   setCallback parser parsedEndElement $ gotEndElement ioRef
@@ -219,7 +292,8 @@ emptyFramework name = Framework {
                         frameworkTypes = [],
                         frameworkConstants = [],
                         frameworkEnums = [],
-                        frameworkFunctions = []
+                        frameworkFunctions = [],
+                        frameworkFunctionAliases = []
                       }
 
 
@@ -237,8 +311,35 @@ gotBeginElement ioRef elementName' attributes' = do
                                $ attributeContent attribute))
               attributes'
   parseState <- readIORef ioRef
-  let framework = parseStateFramework parseState
+  let architecture = parseStateArchitecture parseState
+      framework = parseStateFramework parseState
       currentFunction = parseStateCurrentFunction parseState
+      chooseByBitSize maybeDefault maybe64
+        = case architecture of
+            Architecture SixtyFourBit _ ->
+              listToMaybe $ catMaybes [maybe64, maybeDefault]
+            Architecture ThirtyTwoBit _ ->
+              listToMaybe $ catMaybes [maybeDefault]
+      chooseByBitSizeAndEndianness maybeDefault maybe64 maybeLE maybeBE
+        = case architecture of
+            Architecture SixtyFourBit BigEndian ->
+              listToMaybe $ catMaybes [maybe64, maybeBE, maybeDefault]
+            Architecture SixtyFourBit LittleEndian ->
+              listToMaybe $ catMaybes [maybe64, maybeLE, maybeDefault]
+            Architecture ThirtyTwoBit BigEndian ->
+              listToMaybe $ catMaybes [maybeBE, maybeDefault]
+            Architecture ThirtyTwoBit LittleEndian ->
+              listToMaybe $ catMaybes [maybeLE, maybeDefault]
+      typeByArchitecture
+        = case chooseByBitSize (lookup "type" attributes)
+                               (lookup "type64" attributes) of
+            Just theType -> parseLinkageType architecture theType
+            Nothing -> Nothing
+      valueByArchitecture
+        = chooseByBitSizeAndEndianness (lookup "value" attributes)
+                                       (lookup "value64" attributes)
+                                       (lookup "le_value" attributes)
+                                       (lookup "be_value" attributes)
       (framework', currentFunction')
         = case elementName of
             "depends_on" -> let dependency = fromJust $ lookup "path" attributes
@@ -248,93 +349,115 @@ gotBeginElement ioRef elementName' attributes' = do
                                         ++ [dependency]
                                   },
                                 currentFunction)
-            "opaque" -> let theName = fromJust $ lookup "name" attributes
-                            maybeType32 = lookup "type" attributes
-                            maybeType64 = lookup "type64" attributes
-                            theType = head $ catMaybes [maybeType64,
-                                                        maybeType32]
+            "opaque" -> let maybeName = lookup "name" attributes
+                            maybeType = typeByArchitecture
                             isMagic = case lookup "magic_cookie" attributes of
                                         Just "true" -> True
                                         _ -> False
-                        in (framework {
-                                frameworkTypes
-                                  = frameworkTypes framework
-                                    ++ [OpaqueType theName theType isMagic]
-                              },
-                            currentFunction)
-            "constant" -> let theName = fromJust $ lookup "name" attributes
-                              maybeType32 = lookup "type" attributes
-                              maybeType64 = lookup "type64" attributes
-                              theType = head $ catMaybes [maybeType64,
-                                                          maybeType32]
+                        in case (maybeName, maybeType) of
+                             (Just name, Just theType) ->
+                               (framework {
+                                  frameworkTypes
+                                    = frameworkTypes framework
+                                      ++ [OpaqueType name theType isMagic]
+                                },
+                                currentFunction)
+                             _ -> (framework, currentFunction)
+            "struct" -> let maybeName = lookup "name" attributes
+                            maybeType = typeByArchitecture
+                            opaque = case lookup "opaque" attributes of
+                                       Just "true" -> True
+                                       _ -> False
+                        in case (maybeName, maybeType) of
+                             (Just name, Just theType) ->
+                               (framework {
+                                  frameworkTypes
+                                    = frameworkTypes framework
+                                      ++ [StructureType name theType opaque]
+                                },
+                                currentFunction)
+                             _ -> (framework, currentFunction)
+            "constant" -> let maybeName = lookup "name" attributes
+                              maybeType = typeByArchitecture
                               isMagic = case lookup "magic_cookie" attributes of
                                           Just "true" -> True
                                           _ -> False
-                              declaredType
-                                = fromJust $ lookup "declared_type" attributes
-                          in (framework {
-                                  frameworkConstants
-                                    = frameworkConstants framework
-                                      ++ [Constant theName
-                                                   (Type theType declaredType)
-                                                   isMagic]
-                                },
-                              currentFunction)
-            "enum" -> let theName = fromJust $ lookup "name" attributes
-                          maybeValue32 = lookup "value" attributes
-                          maybeValue64 = lookup "value64" attributes
-                          maybeLEValue = lookup "le_value" attributes
-                          maybeBEValue = lookup "be_value" attributes
-                          theValue = head $ catMaybes [maybeValue64,
-                                                       maybeValue32,
-                                                       maybeLEValue,
-                                                       maybeBEValue]
-                          enum = if elem '.' theValue
-                                   then FloatEnum theName (read theValue)
-                                   else IntEnum theName (read theValue)
-                      in (framework {
-                              frameworkEnums
-                                = frameworkEnums framework
-                                  ++ [enum]
-                            },
-                          currentFunction)
+                              declaredType =
+                                fmap parseDeclaredType
+                                     $ lookup "declared_type" attributes
+                          in case (maybeName, maybeType) of
+                               (Just name, Just theType) ->
+                                 (framework {
+                                    frameworkConstants
+                                      = frameworkConstants framework
+                                        ++ [Constant name
+                                                     (Type theType declaredType)
+                                                     isMagic]
+                                  },
+                                  currentFunction)
+                               _ -> (framework, currentFunction)
+            "enum" -> let maybeName = lookup "name" attributes
+                          maybeValue = valueByArchitecture
+                      in case (maybeName, maybeValue) of
+                           (Just name, Just value) ->
+                             let enum = if elem '.' value
+                                          then FloatEnum name (read value)
+                                          else IntEnum name (read value)
+                             in (framework {
+                                   frameworkEnums
+                                     = frameworkEnums framework
+                                       ++ [enum]
+                                 },
+                                 currentFunction)
+                           _ -> (framework, currentFunction)
             "function" -> let theName = fromJust $ lookup "name" attributes
                           in (framework,
                               Just $ Function theName Void [])
+            "function_alias" ->
+              let theName = fromJust $ lookup "name" attributes
+                  theOriginal = fromJust $ lookup "original" attributes
+              in (framework {
+                      frameworkFunctionAliases
+                        = frameworkFunctionAliases framework
+                          ++ [FunctionAlias theName theOriginal]
+                    },
+                  currentFunction)
             "retval" -> 
               case currentFunction of
                 Nothing -> (framework, currentFunction)
                 Just _ ->
-                  let maybeType32 = lookup "type" attributes
-                      maybeType64 = lookup "type64" attributes
-                      theType = head $ catMaybes [maybeType64,
-                                                  maybeType32]
+                  let maybeType = typeByArchitecture
                       declaredType
-                        = fromJust $ lookup "declared_type" attributes
+                        = fmap parseDeclaredType
+                               $ lookup "declared_type" attributes
                       Just (Function functionName _ arguments)
                         = currentFunction
-                  in (framework,
-                      Just $ Function functionName
-                                      (Type theType declaredType)
-                                      arguments)
+                  in case maybeType of
+                       Just theType ->
+                         (framework,
+                          Just $ Function functionName
+                                          (Type theType declaredType)
+                                          arguments)
+                       _ -> (framework, currentFunction)
             "arg" ->
               case currentFunction of
                 Nothing -> (framework, currentFunction)
                 Just _ ->
                   let theName = fromMaybe "argument" $ lookup "name" attributes
-                      maybeType32 = lookup "type" attributes
-                      maybeType64 = lookup "type64" attributes
-                      theType = head $ catMaybes [maybeType64,
-                                                  maybeType32]
+                      maybeType = typeByArchitecture
                       declaredType
-                        = fromJust $ lookup "declared_type" attributes
-                      argument = (theName, Type theType declaredType)
-                      Just (Function functionName returnType arguments)
-                        = currentFunction
-                  in (framework,
-                      Just $ Function functionName
-                                      returnType
-                                      (arguments ++ [argument]))
+                        = fmap parseDeclaredType
+                               $ lookup "declared_type" attributes
+                  in case maybeType of
+                       Just theType ->
+                         let argument = (theName, Type theType declaredType)
+                             Just (Function functionName returnType arguments)
+                               = currentFunction
+                         in (framework,
+                             Just $ Function functionName
+                                             returnType
+                                             (arguments ++ [argument]))
+                       _ -> (framework, currentFunction)
             _ -> (framework, currentFunction)
   writeIORef ioRef $ parseState {
                           parseStateFramework = framework',
@@ -363,6 +486,145 @@ gotEndElement ioRef elementName' = do
                           parseStateCurrentFunction = currentFunction'
                        }
   return True
+
+
+parseLinkageType :: Architecture -> String -> Maybe LinkageType
+parseLinkageType _ topLevelString =
+  let takeLinkageType :: String -> Maybe (LinkageType, String)
+      takeLinkageType string =
+        case head string of
+          'c' -> Just (Int8LinkageType, tail string)
+          'i' -> Just (Int32LinkageType, tail string)
+          's' -> Just (Int16LinkageType, tail string)
+          'l' -> Just (Int32LinkageType, tail string)
+          'q' -> Just (Int64LinkageType, tail string)
+          'C' -> Just (Word8LinkageType, tail string)
+          'I' -> Just (Word32LinkageType, tail string)
+          'S' -> Just (Word16LinkageType, tail string)
+          'L' -> Just (Word32LinkageType, tail string)
+          'Q' -> Just (Word64LinkageType, tail string)
+          'f' -> Just (FloatLinkageType, tail string)
+          'd' -> Just (DoubleLinkageType, tail string)
+          'B' -> Just (BoolLinkageType, tail string)
+          'v' -> Just (VoidLinkageType, tail string)
+          '*' -> Just (CStringLinkageType, tail string)
+          '@' -> Just (ObjectLinkageType, tail string)
+          '#' -> Just (ClassLinkageType, tail string)
+          ':' -> Just (SelectorLinkageType, tail string)
+          '[' ->
+            let (countString, rest) = span isDigit $ tail string
+                count = read countString
+            in case takeLinkageType $ rest of
+                 Nothing -> Nothing
+                 Just (contentType, rest) ->                 
+                   case head rest of
+                     ']' -> Just (ArrayLinkageType count contentType, tail rest)
+                     _ -> Nothing
+          '{' ->
+            case parseSubtypes '}' $ tail string of
+              Just (name, maybeSubtypes, rest) ->
+                Just (StructureLinkageType name maybeSubtypes, rest)
+              _ -> Nothing
+          '(' ->
+            case parseSubtypes ')' $ tail string of
+              Just (name, Just subtypes, rest) ->
+                Just (UnionLinkageType name subtypes, rest)
+              _ -> Nothing
+          'b' ->
+            let (widthString, rest) = span isDigit $ tail string
+                width = read widthString
+            in Just (BitfieldLinkageType width, rest)
+          '^' ->
+            case takeLinkageType $ tail string of
+                 Nothing -> Nothing
+                 Just (contentType, rest) ->
+                   Just (PointerLinkageType contentType, rest)
+          '?' -> Just (UnknownLinkageType, tail string)
+          'r' -> case takeLinkageType $ tail string of
+                   Nothing -> Nothing
+                   Just (linkageType, rest) ->
+                     Just (qualifyLinkageType ConstQualifier linkageType,
+                           rest)
+          'n' -> case takeLinkageType $ tail string of
+                   Nothing -> Nothing
+                   Just (linkageType, rest) ->
+                     Just (qualifyLinkageType InQualifier linkageType,
+                           rest)
+          'N' -> case takeLinkageType $ tail string of
+                   Nothing -> Nothing
+                   Just (linkageType, rest) ->
+                     Just (qualifyLinkageType InOutQualifier linkageType,
+                           rest)
+          'o' -> case takeLinkageType $ tail string of
+                   Nothing -> Nothing
+                   Just (linkageType, rest) ->
+                     Just (qualifyLinkageType OutQualifier linkageType,
+                           rest)
+          'O' -> case takeLinkageType $ tail string of
+                   Nothing -> Nothing
+                   Just (linkageType, rest) ->
+                     Just (qualifyLinkageType ByCopyQualifier linkageType,
+                           rest)
+          'R' -> case takeLinkageType $ tail string of
+                   Nothing -> Nothing
+                   Just (linkageType, rest) ->
+                     Just (qualifyLinkageType ByReferenceQualifier linkageType,
+                           rest)
+          'V' -> case takeLinkageType $ tail string of
+                   Nothing -> Nothing
+                   Just (linkageType, rest) ->
+                     Just (qualifyLinkageType OneWayQualifier linkageType,
+                           rest)
+      
+      qualifyLinkageType :: LinkageQualifier -> LinkageType -> LinkageType
+      qualifyLinkageType qualifier linkageType =
+        case linkageType of
+          QualifiedLinkageType otherQualifiers underlyingType ->
+            QualifiedLinkageType (otherQualifiers ++ [qualifier]) underlyingType
+          _ -> QualifiedLinkageType [qualifier] linkageType
+      
+      parseSubtypes :: Char
+                    -> String
+                    -> Maybe (String,
+                              Maybe [(Maybe String, LinkageType)],
+                              String)
+      parseSubtypes delimiter string =
+        let loop :: [(Maybe String, LinkageType)]
+                 -> String
+                 -> Maybe ([(Maybe String, LinkageType)], String)
+            loop results string =
+              if head string == delimiter
+                then Just (results, tail string)
+                else
+                  let (maybeFieldName, rest) =
+                        if head string == '"'
+                          then let (fieldName, rest) = break (\c -> c == '"')
+                                                             $ drop 1 string
+                               in (Just fieldName, tail rest)
+                          else (Nothing, string)
+                      in case takeLinkageType rest of
+                           Nothing -> Nothing
+                           Just (result, restRest) ->
+                             loop (results ++ [(maybeFieldName, result)])
+                                  restRest
+            maybeSubtypes =
+              case subtypeEncodings of
+                ('=':subtypeEncodings') -> loop [] subtypeEncodings'
+                rest -> Nothing
+            (name, subtypeEncodings) = break (\c -> c == '=' || c== delimiter)
+                                             string
+        in case maybeSubtypes of
+             Nothing -> Just (name, Nothing, tail subtypeEncodings)
+             Just (subtypes, rest) -> Just (name, Just subtypes, rest)
+      
+  in case takeLinkageType topLevelString of
+       Just (theType, "") -> Just theType
+       _ -> Nothing
+
+
+parseDeclaredType :: String -> DeclaredType
+parseDeclaredType string =
+  DeclaredType string
 
 
 error :: String -> IO a
