@@ -62,7 +62,7 @@ data LinkageType = CharLinkageType
                  | CStringLinkageType
                  | ObjectLinkageType
                  | ClassLinkageType
-                 | SelectorLinkageType
+                 | SelectorLinkageType (Maybe LinkageType)
                  | ArrayLinkageType Int LinkageType
                  | StructureLinkageType String
                                         (Maybe [(Maybe String, LinkageType)])
@@ -430,6 +430,14 @@ gotBeginElement ioRef elementName' attributes' = do
                                        (lookup "le_value" attributes)
                                        (lookup "be_value" attributes)
       
+      selectorTypeByArchitecture :: Maybe LinkageType
+      selectorTypeByArchitecture
+        = case chooseByBitSize (lookup "sel_of_type" attributes)
+                               (lookup "sel_of_type64" attributes) of
+            Just signature ->
+              parseLinkageType architecture True signature
+            Nothing -> Nothing
+      
       semantics :: Maybe TypeSemantics
       semantics = let cArrayLengthInArgument
                         = fmap read $ lookup "c_array_length_in_arg" attributes
@@ -548,7 +556,9 @@ gotBeginElement ioRef elementName' attributes' = do
                                             "c_array_of_fixed_length",
                                             "c_array_of_variable_length",
                                             "printf_format",
-                                            "null_accepted"]
+                                            "null_accepted",
+                                            "sel_of_type",
+                                            "sel_of_type64"]
           "field" -> computeUnusedAttributes ["name"]
           _ -> computeUnusedAttributes []
       
@@ -799,7 +809,13 @@ gotBeginElement ioRef elementName' attributes' = do
                    _ -> oldParseState
             "arg" ->
               let maybeName = lookup "name" attributes
+                  maybeSelectorType = selectorTypeByArchitecture
                   maybeType = typeByArchitecture False
+                  maybeTypeWithSelectorType
+                    = case (maybeType, maybeSelectorType) of
+                        (Just (SelectorLinkageType Nothing), Just selectorType)
+                          -> Just $ SelectorLinkageType $ Just selectorType
+                        _ -> maybeType
                   maybeTypeQualifier = case lookup "type_modifier" attributes of
                                          Nothing -> Nothing
                                          Just "n" -> Just InQualifier
@@ -807,10 +823,10 @@ gotBeginElement ioRef elementName' attributes' = do
                                          Just "N" -> Just InOutQualifier
                   maybeQualifiedType =
                     case maybeTypeQualifier of
-                      Nothing -> maybeType
+                      Nothing -> maybeTypeWithSelectorType
                       Just typeQualifier ->
                         fmap (qualifyLinkageType typeQualifier)
-                             maybeType
+                             maybeTypeWithSelectorType
                   isConst = case lookup "const" attributes of
                               Just "true" -> True
                               _ -> False
@@ -989,7 +1005,7 @@ parseLinkageType _ isMethodSignature topLevelString =
           '*' -> Just (CStringLinkageType, tail string)
           '@' -> Just (ObjectLinkageType, tail string)
           '#' -> Just (ClassLinkageType, tail string)
-          ':' -> Just (SelectorLinkageType, tail string)
+          ':' -> Just (SelectorLinkageType Nothing, tail string)
           '[' ->
             let (countString, rest) = span isDigit $ tail string
                 count = read countString
