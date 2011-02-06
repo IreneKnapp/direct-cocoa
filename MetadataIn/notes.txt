@@ -5,9 +5,10 @@ declared_type attributes on several element types which are useful for
 Haskell with its strong type system, where two things having the same binary
 format are not necessarily treated identically.
 
-Note that we get everything we need from the XML; we don't need to use
-ObjC's runtime reflection capabilities - nice though they are - nor do we
-attempt to.
+Note that we get almost everything we need from the XML; we don't need to use
+ObjC's runtime reflection capabilities much at all, nice though they are.  But,
+sadly, what we don't get without them is the class inheritance structure, so
+we DO need to use reflection.
 
 About that magic_cookie attribute...  There are no opaque types which use it,
 so heaven knows what it would actually mean there.  There is exactly one

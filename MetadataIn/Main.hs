@@ -112,7 +112,7 @@ data EnumDefinition = IntEnum String Int64
 
 data FunctionDefinition = Function String
                                    TypeReference
-                                   [(String, TypeReference)]
+                                   [(Maybe String, TypeReference)]
                         deriving (Show, Data, Typeable)
 
 
@@ -125,16 +125,28 @@ data StringConstantDefinition = StringConstant String String Bool
 
 
 data ClassDefinition = Class {
-    className :: String
+    className :: String,
+    classMethods :: [MethodDefinition]
   }
   deriving (Show, Data, Typeable)
+
+data MethodDefinition
+  = ClassMethod Selector TypeReference [(Maybe String, TypeReference)]
+  | InstanceMethod Selector TypeReference [(Maybe String, TypeReference)]
+  deriving (Show, Data, Typeable)
+
+data Selector = Selector String
+              deriving (Show, Data, Typeable)
 
 
 data ParseState = ParseState {
     parseStateArchitecture :: Architecture,
     parseStateFramework :: Framework,
     parseStateCurrentFunction :: Maybe FunctionDefinition,
-    parseStateCurrentClass :: Maybe ClassDefinition
+    parseStateCurrentClass :: Maybe ClassDefinition,
+    parseStateCurrentMethod :: Maybe MethodDefinition,
+    parseStateCurrentReturnValue :: Maybe TypeReference,
+    parseStateCurrentArguments :: Maybe [(Maybe String, TypeReference)]
   }
 
 
@@ -142,11 +154,27 @@ main :: IO ()
 main = do
   let architecture = Architecture SixtyFourBit LittleEndian
   frameworks <- processFramework architecture "Cocoa"
-  everywhereM (mkM $ \it -> do
-                 case it of
-                   Class { } -> putStrLn $ show it
-                 return it)
-              frameworks
+  mapM_ (\classDefinition -> do
+           putStrLn $ (className classDefinition)
+                      ++ " has " ++
+                      (show
+                       $ gcount
+                          (mkQ False
+                               (\method -> case method of
+                                             ClassMethod _ _ _ -> True
+                                             InstanceMethod _ _ _ -> False))
+                          classDefinition)
+                      ++ " class methods and " ++
+                      (show
+                       $ gcount
+                          (mkQ False
+                               (\method -> case method of
+                                             ClassMethod _ _ _ -> False
+                                             InstanceMethod _ _ _ -> True))
+                          classDefinition)
+                      ++ " instance methods."
+           hFlush stdout)
+        $ concat $ map frameworkClasses frameworks
   putStrLn $ "All done!"
 
 
@@ -293,6 +321,12 @@ loadBridgeSupport architecture frameworkName location = do
                           parseStateCurrentFunction
                             = Nothing,
                           parseStateCurrentClass
+                            = Nothing,
+                          parseStateCurrentMethod
+                            = Nothing,
+                          parseStateCurrentReturnValue
+                            = Nothing,
+                          parseStateCurrentArguments
                             = Nothing
                         }
   parser <- newParser error
@@ -332,17 +366,28 @@ gotBeginElement ioRef elementName' attributes' = do
                                       "&" ++ TL.unpack text ++ ";")
                                $ attributeContent attribute))
               attributes'
-  parseState <- readIORef ioRef
-  let architecture = parseStateArchitecture parseState
-      framework = parseStateFramework parseState
-      currentFunction = parseStateCurrentFunction parseState
-      currentClass = parseStateCurrentClass parseState
+  oldParseState <- readIORef ioRef
+  let architecture :: Architecture
+      architecture = parseStateArchitecture oldParseState
+      
+      framework :: Framework
+      framework = parseStateFramework oldParseState
+      
+      chooseByBitSize :: (Maybe a)
+                      -> (Maybe a)
+                      -> (Maybe a)
       chooseByBitSize maybeDefault maybe64
         = case architecture of
             Architecture SixtyFourBit _ ->
               listToMaybe $ catMaybes [maybe64, maybeDefault]
             Architecture ThirtyTwoBit _ ->
               listToMaybe $ catMaybes [maybeDefault]
+      
+      chooseByBitSizeAndEndianness :: (Maybe a)
+                                   -> (Maybe a)
+                                   -> (Maybe a)
+                                   -> (Maybe a)
+                                   -> (Maybe a)
       chooseByBitSizeAndEndianness maybeDefault maybe64 maybeLE maybeBE
         = case architecture of
             Architecture SixtyFourBit BigEndian ->
@@ -353,112 +398,131 @@ gotBeginElement ioRef elementName' attributes' = do
               listToMaybe $ catMaybes [maybeBE, maybeDefault]
             Architecture ThirtyTwoBit LittleEndian ->
               listToMaybe $ catMaybes [maybeLE, maybeDefault]
+      
+      typeByArchitecture :: Maybe LinkageType
       typeByArchitecture
         = case chooseByBitSize (lookup "type" attributes)
                                (lookup "type64" attributes) of
             Just theType -> parseLinkageType architecture theType
             Nothing -> Nothing
+      
+      valueByArchitecture :: Maybe String
       valueByArchitecture
         = chooseByBitSizeAndEndianness (lookup "value" attributes)
                                        (lookup "value64" attributes)
                                        (lookup "le_value" attributes)
                                        (lookup "be_value" attributes)
-      (framework', currentFunction', currentClass')
+      
+      newParseState :: ParseState
+      newParseState
         = case elementName of
-            "depends_on" -> let maybeDependency = lookup "path" attributes
-                            in case maybeDependency of
-                                 Just dependency ->
-                                   (framework {
-                                        frameworkDependencies
-                                          = frameworkDependencies framework
-                                            ++ [dependency]
-                                      },
-                                    currentFunction,
-                                    currentClass)
-            "opaque" -> let maybeName = lookup "name" attributes
-                            maybeType = typeByArchitecture
-                            isMagic = case lookup "magic_cookie" attributes of
-                                        Just "true" -> True
-                                        _ -> False
-                        in case (maybeName, maybeType) of
-                             (Just name, Just theType) ->
-                               (framework {
-                                    frameworkTypes
-                                      = frameworkTypes framework
-                                        ++ [OpaqueType name theType isMagic]
-                                  },
-                                currentFunction,
-                                currentClass)
-                             _ -> (framework, currentFunction, currentClass)
-            "struct" -> let maybeName = lookup "name" attributes
-                            maybeType = typeByArchitecture
-                            opaque = case lookup "opaque" attributes of
-                                       Just "true" -> True
-                                       _ -> False
-                        in case (maybeName, maybeType) of
-                             (Just name, Just theType) ->
-                               (framework {
-                                    frameworkTypes
-                                      = frameworkTypes framework
-                                        ++ [StructureType name theType opaque]
-                                  },
-                                currentFunction,
-                                currentClass)
-                             _ -> (framework, currentFunction, currentClass)
-            "cftype" -> let maybeName = lookup "name" attributes
-                            maybeType = typeByArchitecture
-                            maybeTollfree = lookup "tollfree" attributes
-                            maybeTypeIDFunctionName
-                              = lookup "gettypeid_func" attributes
-                        in case (maybeName, maybeType) of
-                             (Just name, Just theType) ->
-                               (framework {
-                                    frameworkTypes
-                                      = frameworkTypes framework
-                                        ++ [CoreFoundationType
-                                             name
-                                             theType
-                                             maybeTollfree
-                                             maybeTypeIDFunctionName]
-                                  },
-                                currentFunction,
-                                currentClass)
-                             _ -> (framework, currentFunction, currentClass)
-            "constant" -> let maybeName = lookup "name" attributes
-                              maybeType = typeByArchitecture
-                              isMagic = case lookup "magic_cookie" attributes of
-                                          Just "true" -> True
-                                          _ -> False
-                              declaredType =
-                                fmap parseDeclaredType
-                                     $ lookup "declared_type" attributes
-                          in case (maybeName, maybeType) of
-                               (Just name, Just theType) ->
-                                 (framework {
-                                      frameworkConstants
-                                        = frameworkConstants framework
-                                          ++ [Constant name
-                                                       (Type theType
-                                                             declaredType)
-                                                       isMagic]
-                                    },
-                                  currentFunction,
-                                  currentClass)
-                               _ -> (framework, currentFunction, currentClass)
-            "enum" -> let maybeName = lookup "name" attributes
-                          maybeValue = valueByArchitecture
-                      in case (maybeName, maybeValue) of
-                           (Just name, Just value) ->
-                             let enum = if elem '.' value
-                                          then FloatEnum name (read value)
-                                          else IntEnum name (read value)
-                             in (framework {
-                                     frameworkEnums
-                                       = frameworkEnums framework
-                                         ++ [enum]
-                                   },
-                                 currentFunction, currentClass)
-                           _ -> (framework, currentFunction, currentClass)
+            "depends_on" ->
+              let maybeDependency = lookup "path" attributes
+              in case maybeDependency of
+                   Just dependency ->
+                     oldParseState {
+                         parseStateFramework
+                           = framework {
+                                 frameworkDependencies
+                                   = frameworkDependencies framework
+                                     ++ [dependency]
+                               }
+                       }
+                   _ -> oldParseState
+            "opaque" ->
+              let maybeName = lookup "name" attributes
+                  maybeType = typeByArchitecture
+                  isMagic = case lookup "magic_cookie" attributes of
+                              Just "true" -> True
+                              _ -> False
+              in case (maybeName, maybeType) of
+                   (Just name, Just theType) ->
+                     oldParseState {
+                         parseStateFramework
+                           = framework {
+                                  frameworkTypes
+                                    = frameworkTypes framework
+                                      ++ [OpaqueType name theType isMagic]
+                                }
+                       }
+                   _ -> oldParseState
+            "struct" ->
+              let maybeName = lookup "name" attributes
+                  maybeType = typeByArchitecture
+                  opaque = case lookup "opaque" attributes of
+                             Just "true" -> True
+                             _ -> False
+              in case (maybeName, maybeType) of
+                   (Just name, Just theType) ->
+                     oldParseState {
+                         parseStateFramework
+                           = framework {
+                                 frameworkTypes
+                                   = frameworkTypes framework
+                                     ++ [StructureType name theType opaque]
+                               }
+                       }
+                   _ -> oldParseState
+            "cftype" ->
+              let maybeName = lookup "name" attributes
+                  maybeType = typeByArchitecture
+                  maybeTollfree = lookup "tollfree" attributes
+                  maybeTypeIDFunctionName
+                    = lookup "gettypeid_func" attributes
+              in case (maybeName, maybeType) of
+                   (Just name, Just theType) ->
+                     oldParseState {
+                         parseStateFramework
+                           = framework {
+                                 frameworkTypes
+                                   = frameworkTypes framework
+                                     ++ [CoreFoundationType
+                                          name
+                                          theType
+                                          maybeTollfree
+                                          maybeTypeIDFunctionName]
+                               }
+                       }
+                   _ -> oldParseState
+            "constant" ->
+              let maybeName = lookup "name" attributes
+                  maybeType = typeByArchitecture
+                  isMagic = case lookup "magic_cookie" attributes of
+                              Just "true" -> True
+                              _ -> False
+                  declaredType =
+                    fmap parseDeclaredType
+                         $ lookup "declared_type" attributes
+              in case (maybeName, maybeType) of
+                   (Just name, Just theType) ->
+                     oldParseState {
+                         parseStateFramework
+                           = framework {
+                                 frameworkConstants
+                                   = frameworkConstants framework
+                                     ++ [Constant name
+                                                  (Type theType declaredType)
+                                                  isMagic]
+                               }
+                       }
+                   _ -> oldParseState
+            "enum" ->
+              let maybeName = lookup "name" attributes
+                  maybeValue = valueByArchitecture
+              in case (maybeName, maybeValue) of
+                   (Just name, Just value) ->
+                     let enum = if elem '.' value
+                                  then FloatEnum name (read value)
+                                  else IntEnum name (read value)
+                     in oldParseState {
+                            parseStateFramework
+                              = framework {
+                                    frameworkEnums
+                                      = frameworkEnums framework
+                                        ++ [enum]
+                                  }
+                          }
+                   _ -> oldParseState
             "string_constant" ->
               let maybeName = lookup "name" attributes
                   maybeValue = lookup "value" attributes
@@ -467,123 +531,180 @@ gotBeginElement ioRef elementName' attributes' = do
                                  _ -> False
               in case (maybeName, maybeValue) of
                    (Just name, Just value) ->
-                     (framework {
-                          frameworkStringConstants
-                            = frameworkStringConstants framework
-                              ++ [StringConstant name value isNSString]
-                        },
-                      currentFunction, currentClass)
-                   _ -> (framework, currentFunction, currentClass)
-            "function" -> let maybeName = lookup "name" attributes
-                          in case maybeName of
-                               Just name ->
-                                 (framework,
-                                  Just $ Function name Void [],
-                                  currentClass)
-                               _ -> (framework, currentFunction, currentClass)
+                     oldParseState {
+                         parseStateFramework
+                           = framework {
+                                 frameworkStringConstants
+                                   = frameworkStringConstants framework
+                                     ++ [StringConstant name value isNSString]
+                               }
+                       }
+                   _ -> oldParseState
+            "function" ->
+              let maybeName = lookup "name" attributes
+              in case maybeName of
+                   Just name ->
+                     oldParseState {
+                         parseStateCurrentFunction
+                           = Just $ Function name Void []
+                       }
+                   _ -> oldParseState
             "function_alias" ->
               let maybeName = lookup "name" attributes
                   maybeOriginal = lookup "original" attributes
               in case (maybeName, maybeOriginal) of
                    (Just name, Just original) ->
-                     (framework {
-                          frameworkFunctionAliases
-                            = frameworkFunctionAliases framework
-                              ++ [FunctionAlias name original]
-                        },
-                      currentFunction,
-                      currentClass)
-                   _ -> (framework, currentFunction, currentClass)
+                     oldParseState {
+                         parseStateFramework
+                           = framework {
+                                 frameworkFunctionAliases
+                                   = frameworkFunctionAliases framework
+                                     ++ [FunctionAlias name original]
+                               }
+                       }
+                   _ -> oldParseState
             "class" ->
               let maybeName = lookup "name" attributes
               in case maybeName of
                    Just name ->
-                     (framework,
-                      currentFunction,
-                      Just $ Class {
-                                 className = name
-                               })
-                   _ -> (framework, currentFunction, currentClass)
-            "retval" -> 
-              case currentFunction of
-                Nothing -> (framework, currentFunction, currentClass)
-                Just _ ->
-                  let maybeType = typeByArchitecture
-                      declaredType
-                        = fmap parseDeclaredType
-                               $ lookup "declared_type" attributes
-                      Just (Function functionName _ arguments)
-                        = currentFunction
-                  in case maybeType of
-                       Just theType ->
-                         (framework,
-                          Just $ Function functionName
-                                          (Type theType declaredType)
-                                          arguments,
-                          currentClass)
-                       _ -> (framework, currentFunction, currentClass)
-            "arg" ->
-              case currentFunction of
-                Nothing -> (framework, currentFunction, currentClass)
-                Just _ ->
-                  let theName = fromMaybe "argument" $ lookup "name" attributes
-                      maybeType = typeByArchitecture
-                      declaredType
-                        = fmap parseDeclaredType
-                               $ lookup "declared_type" attributes
-                  in case maybeType of
-                       Just theType ->
-                         let argument = (theName, Type theType declaredType)
-                             Just (Function functionName returnType arguments)
-                               = currentFunction
-                         in (framework,
-                             Just $ Function functionName
-                                             returnType
-                                             (arguments ++ [argument]),
-                             currentClass)
-                       _ -> (framework, currentFunction, currentClass)
-            _ -> (framework, currentFunction, currentClass)
-  writeIORef ioRef $ parseState {
-                          parseStateFramework = framework',
-                          parseStateCurrentFunction = currentFunction',
-                          parseStateCurrentClass = currentClass'
+                     oldParseState {
+                         parseStateCurrentClass
+                           = Just $ Class {
+                               className = name,
+                               classMethods = []
+                             }
                        }
+                   _ -> oldParseState
+            "method" ->
+              let maybeSelector = fmap parseSelector
+                                       $ lookup "selector" attributes
+                  classMethod = case lookup "class_method" attributes of
+                                  Just "true" -> True
+                                  _ -> False
+              in case maybeSelector of
+                   Just selector ->
+                     oldParseState {
+                         parseStateCurrentMethod
+                           = Just $ if classMethod
+                                      then ClassMethod selector Void []
+                                      else InstanceMethod selector Void []
+                       }
+                   _ -> oldParseState
+            "retval" -> 
+              let maybeType = typeByArchitecture
+                  maybeDeclaredType = fmap parseDeclaredType
+                                           $ lookup "declared_type" attributes
+              in case maybeType of
+                   Just theType ->
+                     oldParseState {
+                         parseStateCurrentReturnValue
+                           = Just $ Type theType maybeDeclaredType
+                       }
+                   _ -> oldParseState
+            "arg" ->
+              let maybeName = lookup "name" attributes
+                  maybeType = typeByArchitecture
+                  maybeDeclaredType
+                    = fmap parseDeclaredType
+                           $ lookup "declared_type" attributes
+              in case maybeType of
+                   Just theType ->
+                     let argument = (maybeName, Type theType maybeDeclaredType)
+                     in oldParseState {
+                            parseStateCurrentArguments
+                              = case parseStateCurrentArguments oldParseState of
+                                  Nothing -> Just [argument]
+                                  Just arguments ->
+                                    Just $ arguments ++ [argument]
+                          }
+                   _ -> oldParseState
+            _ -> oldParseState
+  writeIORef ioRef newParseState
   return True
 
 
 gotEndElement :: IORef ParseState -> Name-> IO Bool
 gotEndElement ioRef elementName' = do
   let elementName = TL.unpack $ nameLocalName $ elementName'
-  parseState <- readIORef ioRef
-  let framework = parseStateFramework parseState
-      maybeCurrentFunction = parseStateCurrentFunction parseState
-      maybeCurrentClass = parseStateCurrentClass parseState
-      (framework', maybeCurrentFunction', maybeCurrentClass')
+  oldParseState <- readIORef ioRef
+  let framework :: Framework
+      framework = parseStateFramework oldParseState
+      
+      newParseState :: ParseState
+      newParseState
         = case elementName of
             "function" ->
-              case maybeCurrentFunction of
-                Just currentFunction -> (framework {
-                                             frameworkFunctions
-                                               = frameworkFunctions framework
-                                                 ++ [currentFunction]
-                                           },
-                                         Nothing,
-                                         maybeCurrentClass)
-            "class" ->
-              case maybeCurrentClass of
-                Just currentClass -> (framework {
-                                          frameworkClasses
-                                            = frameworkClasses framework
-                                              ++ [currentClass]
-                                        },
-                                      maybeCurrentFunction,
-                                      Nothing)
-            _ -> (framework, maybeCurrentFunction, maybeCurrentClass)
-  writeIORef ioRef $ parseState {
-                          parseStateFramework = framework',
-                          parseStateCurrentFunction = maybeCurrentFunction',
-                          parseStateCurrentClass = maybeCurrentClass'
+              case parseStateCurrentFunction oldParseState of
+                Just (Function name _ _) ->
+                  let function = Function name returnValue arguments
+                      returnValue =
+                        case parseStateCurrentReturnValue oldParseState of
+                          Nothing -> Void
+                          Just returnValue -> returnValue
+                      arguments =
+                        case parseStateCurrentArguments oldParseState of
+                          Nothing -> []
+                          Just arguments -> arguments
+                  in oldParseState {
+                         parseStateFramework
+                           = framework {
+                                 frameworkFunctions
+                                   = frameworkFunctions framework
+                                     ++ [function]
+                               },
+                         parseStateCurrentFunction
+                           = Nothing
                        }
+                _ -> oldParseState
+            "class" ->
+              case parseStateCurrentClass oldParseState of
+                Just currentClass ->
+                  oldParseState {
+                      parseStateFramework
+                        = framework {
+                              frameworkClasses
+                                = frameworkClasses framework
+                                  ++ [currentClass]
+                            },
+                      parseStateCurrentClass
+                        = Nothing
+                    }
+                _ -> oldParseState
+            "method" ->
+              case parseStateCurrentMethod oldParseState of
+                Just currentMethod ->
+                  let method = case currentMethod of
+                                 ClassMethod name _ _ ->
+                                   ClassMethod name returnValue arguments
+                                 InstanceMethod name _ _ ->
+                                   InstanceMethod name returnValue arguments
+                      returnValue =
+                        case parseStateCurrentReturnValue oldParseState of
+                          Nothing -> Void
+                          Just returnValue -> returnValue
+                      arguments =
+                        case parseStateCurrentArguments oldParseState of
+                          Nothing -> []
+                          Just arguments -> arguments
+                  in case parseStateCurrentClass oldParseState of
+                       Just currentClass ->
+                         oldParseState {
+                             parseStateCurrentClass
+                               = Just $ currentClass {
+                                            classMethods
+                                               = classMethods currentClass
+                                                 ++ [method]
+                                          },
+                             parseStateCurrentMethod
+                               = Nothing
+                           }
+                       _ -> oldParseState {
+                                parseStateCurrentMethod
+                                  = Nothing
+                              }
+                _ -> oldParseState
+            _ -> oldParseState
+  writeIORef ioRef newParseState
   return True
 
 
@@ -724,6 +845,11 @@ parseLinkageType _ topLevelString =
 parseDeclaredType :: String -> DeclaredType
 parseDeclaredType string =
   DeclaredType string
+
+
+parseSelector :: String -> Selector
+parseSelector string =
+  Selector string
 
 
 error :: String -> IO a
