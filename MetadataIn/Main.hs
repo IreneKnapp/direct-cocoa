@@ -87,6 +87,10 @@ data DeclaredType = DeclaredType String
 
 data TypeDefinition = OpaqueType String LinkageType Bool
                     | StructureType String LinkageType Bool
+                    | CoreFoundationType String
+                                         LinkageType
+                                         (Maybe String)
+                                         (Maybe String)
                     deriving (Show, Data, Typeable)
 
 
@@ -125,9 +129,11 @@ main :: IO ()
 main = do
   let architecture = Architecture SixtyFourBit LittleEndian
   frameworks <- processFramework architecture "Cocoa"
-  everywhereM (mkM $ \linkageType -> do
-                 putStrLn $ show (linkageType :: LinkageType)
-                 return linkageType)
+  everywhereM (mkM $ \theType -> do
+                 case theType of
+                   CoreFoundationType _ _ _ _ -> putStrLn $ show theType
+                   _ -> return ()
+                 return theType)
               frameworks
   putStrLn $ "All done!"
 
@@ -374,6 +380,24 @@ gotBeginElement ioRef elementName' attributes' = do
                                   frameworkTypes
                                     = frameworkTypes framework
                                       ++ [StructureType name theType opaque]
+                                },
+                                currentFunction)
+                             _ -> (framework, currentFunction)
+            "cftype" -> let maybeName = lookup "name" attributes
+                            maybeType = typeByArchitecture
+                            maybeTollfree = lookup "tollfree" attributes
+                            maybeTypeIDFunctionName
+                              = lookup "gettypeid_func" attributes
+                        in case (maybeName, maybeType) of
+                             (Just name, Just theType) ->
+                               (framework {
+                                  frameworkTypes
+                                    = frameworkTypes framework
+                                      ++ [CoreFoundationType
+                                           name
+                                           theType
+                                           maybeTollfree
+                                           maybeTypeIDFunctionName]
                                 },
                                 currentFunction)
                              _ -> (framework, currentFunction)
