@@ -38,7 +38,8 @@ data Framework = Framework {
     frameworkConstants :: [ConstantDefinition],
     frameworkEnums :: [EnumDefinition],
     frameworkFunctions :: [FunctionDefinition],
-    frameworkFunctionAliases :: [FunctionAliasDefinition]
+    frameworkFunctionAliases :: [FunctionAliasDefinition],
+    frameworkStringConstants :: [StringConstantDefinition]
   }
   deriving (Show, Data, Typeable)
 
@@ -118,6 +119,10 @@ data FunctionAliasDefinition = FunctionAlias String String
                              deriving (Show, Data, Typeable)
 
 
+data StringConstantDefinition = StringConstant String String Bool
+                              deriving (Show, Data, Typeable)
+
+
 data ParseState = ParseState {
     parseStateArchitecture :: Architecture,
     parseStateFramework :: Framework,
@@ -129,11 +134,10 @@ main :: IO ()
 main = do
   let architecture = Architecture SixtyFourBit LittleEndian
   frameworks <- processFramework architecture "Cocoa"
-  everywhereM (mkM $ \theType -> do
-                 case theType of
-                   CoreFoundationType _ _ _ _ -> putStrLn $ show theType
-                   _ -> return ()
-                 return theType)
+  everywhereM (mkM $ \it -> do
+                 case it of
+                   StringConstant _ _ _ -> putStrLn $ show it
+                 return it)
               frameworks
   putStrLn $ "All done!"
 
@@ -299,7 +303,8 @@ emptyFramework name = Framework {
                         frameworkConstants = [],
                         frameworkEnums = [],
                         frameworkFunctions = [],
-                        frameworkFunctionAliases = []
+                        frameworkFunctionAliases = [],
+                        frameworkStringConstants = []
                       }
 
 
@@ -434,6 +439,21 @@ gotBeginElement ioRef elementName' attributes' = do
                                  },
                                  currentFunction)
                            _ -> (framework, currentFunction)
+            "string_constant" ->
+              let maybeName = lookup "name" attributes
+                  maybeValue = lookup "value" attributes
+                  isNSString = case lookup "nsstring" attributes of
+                                 Just "true" -> True
+                                 _ -> False
+              in case (maybeName, maybeValue) of
+                   (Just name, Just value) ->
+                     (framework {
+                          frameworkStringConstants
+                            = frameworkStringConstants framework
+                              ++ [StringConstant name value isNSString]
+                        },
+                      currentFunction)
+                   _ -> (framework, currentFunction)
             "function" -> let theName = fromJust $ lookup "name" attributes
                           in (framework,
                               Just $ Function theName Void [])
