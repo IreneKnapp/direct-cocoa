@@ -1,0 +1,17 @@
+Our general strategy here is to parse the "Full" versions of the XML
+.bridgesupport files.  These include (contrary to Apple's documentation) all
+classes, not just classes with special annotations.  They also include
+declared_type attributes on several element types which are useful for
+Haskell with its strong type system, where two things having the same binary
+format are not necessarily treated identically.
+
+Note that we get everything we need from the XML; we don't need to use
+ObjC's runtime reflection capabilities - nice though they are - nor do we
+attempt to.
+
+About that magic_cookie attribute...  There are no opaque types which use it,
+so heaven knows what it would actually mean there.  There is exactly one
+constant which uses it, kCFAllocatorUseContext.  We can infer that this
+basically means "it is actually an out-of-band value, not a pointer".  It's not
+clear how this can be modelled in Haskell, though, so I'm not going to worry
+about it.
