@@ -39,7 +39,8 @@ data Framework = Framework {
     frameworkEnums :: [EnumDefinition],
     frameworkFunctions :: [FunctionDefinition],
     frameworkFunctionAliases :: [FunctionAliasDefinition],
-    frameworkStringConstants :: [StringConstantDefinition]
+    frameworkStringConstants :: [StringConstantDefinition],
+    frameworkClasses :: [ClassDefinition]
   }
   deriving (Show, Data, Typeable)
 
@@ -123,10 +124,17 @@ data StringConstantDefinition = StringConstant String String Bool
                               deriving (Show, Data, Typeable)
 
 
+data ClassDefinition = Class {
+    className :: String
+  }
+  deriving (Show, Data, Typeable)
+
+
 data ParseState = ParseState {
     parseStateArchitecture :: Architecture,
     parseStateFramework :: Framework,
-    parseStateCurrentFunction :: Maybe FunctionDefinition
+    parseStateCurrentFunction :: Maybe FunctionDefinition,
+    parseStateCurrentClass :: Maybe ClassDefinition
   }
 
 
@@ -136,7 +144,7 @@ main = do
   frameworks <- processFramework architecture "Cocoa"
   everywhereM (mkM $ \it -> do
                  case it of
-                   StringConstant _ _ _ -> putStrLn $ show it
+                   Class { } -> putStrLn $ show it
                  return it)
               frameworks
   putStrLn $ "All done!"
@@ -283,6 +291,8 @@ loadBridgeSupport architecture frameworkName location = do
                           parseStateFramework
                             = emptyFramework frameworkName,
                           parseStateCurrentFunction
+                            = Nothing,
+                          parseStateCurrentClass
                             = Nothing
                         }
   parser <- newParser error
@@ -304,7 +314,8 @@ emptyFramework name = Framework {
                         frameworkEnums = [],
                         frameworkFunctions = [],
                         frameworkFunctionAliases = [],
-                        frameworkStringConstants = []
+                        frameworkStringConstants = [],
+                        frameworkClasses = []
                       }
 
 
@@ -325,6 +336,7 @@ gotBeginElement ioRef elementName' attributes' = do
   let architecture = parseStateArchitecture parseState
       framework = parseStateFramework parseState
       currentFunction = parseStateCurrentFunction parseState
+      currentClass = parseStateCurrentClass parseState
       chooseByBitSize maybeDefault maybe64
         = case architecture of
             Architecture SixtyFourBit _ ->
@@ -351,15 +363,18 @@ gotBeginElement ioRef elementName' attributes' = do
                                        (lookup "value64" attributes)
                                        (lookup "le_value" attributes)
                                        (lookup "be_value" attributes)
-      (framework', currentFunction')
+      (framework', currentFunction', currentClass')
         = case elementName of
-            "depends_on" -> let dependency = fromJust $ lookup "path" attributes
-                            in (framework {
-                                    frameworkDependencies
-                                      = frameworkDependencies framework
-                                        ++ [dependency]
-                                  },
-                                currentFunction)
+            "depends_on" -> let maybeDependency = lookup "path" attributes
+                            in case maybeDependency of
+                                 Just dependency ->
+                                   (framework {
+                                        frameworkDependencies
+                                          = frameworkDependencies framework
+                                            ++ [dependency]
+                                      },
+                                    currentFunction,
+                                    currentClass)
             "opaque" -> let maybeName = lookup "name" attributes
                             maybeType = typeByArchitecture
                             isMagic = case lookup "magic_cookie" attributes of
@@ -368,12 +383,13 @@ gotBeginElement ioRef elementName' attributes' = do
                         in case (maybeName, maybeType) of
                              (Just name, Just theType) ->
                                (framework {
-                                  frameworkTypes
-                                    = frameworkTypes framework
-                                      ++ [OpaqueType name theType isMagic]
-                                },
-                                currentFunction)
-                             _ -> (framework, currentFunction)
+                                    frameworkTypes
+                                      = frameworkTypes framework
+                                        ++ [OpaqueType name theType isMagic]
+                                  },
+                                currentFunction,
+                                currentClass)
+                             _ -> (framework, currentFunction, currentClass)
             "struct" -> let maybeName = lookup "name" attributes
                             maybeType = typeByArchitecture
                             opaque = case lookup "opaque" attributes of
@@ -382,12 +398,13 @@ gotBeginElement ioRef elementName' attributes' = do
                         in case (maybeName, maybeType) of
                              (Just name, Just theType) ->
                                (framework {
-                                  frameworkTypes
-                                    = frameworkTypes framework
-                                      ++ [StructureType name theType opaque]
-                                },
-                                currentFunction)
-                             _ -> (framework, currentFunction)
+                                    frameworkTypes
+                                      = frameworkTypes framework
+                                        ++ [StructureType name theType opaque]
+                                  },
+                                currentFunction,
+                                currentClass)
+                             _ -> (framework, currentFunction, currentClass)
             "cftype" -> let maybeName = lookup "name" attributes
                             maybeType = typeByArchitecture
                             maybeTollfree = lookup "tollfree" attributes
@@ -396,16 +413,17 @@ gotBeginElement ioRef elementName' attributes' = do
                         in case (maybeName, maybeType) of
                              (Just name, Just theType) ->
                                (framework {
-                                  frameworkTypes
-                                    = frameworkTypes framework
-                                      ++ [CoreFoundationType
-                                           name
-                                           theType
-                                           maybeTollfree
-                                           maybeTypeIDFunctionName]
-                                },
-                                currentFunction)
-                             _ -> (framework, currentFunction)
+                                    frameworkTypes
+                                      = frameworkTypes framework
+                                        ++ [CoreFoundationType
+                                             name
+                                             theType
+                                             maybeTollfree
+                                             maybeTypeIDFunctionName]
+                                  },
+                                currentFunction,
+                                currentClass)
+                             _ -> (framework, currentFunction, currentClass)
             "constant" -> let maybeName = lookup "name" attributes
                               maybeType = typeByArchitecture
                               isMagic = case lookup "magic_cookie" attributes of
@@ -417,14 +435,16 @@ gotBeginElement ioRef elementName' attributes' = do
                           in case (maybeName, maybeType) of
                                (Just name, Just theType) ->
                                  (framework {
-                                    frameworkConstants
-                                      = frameworkConstants framework
-                                        ++ [Constant name
-                                                     (Type theType declaredType)
-                                                     isMagic]
-                                  },
-                                  currentFunction)
-                               _ -> (framework, currentFunction)
+                                      frameworkConstants
+                                        = frameworkConstants framework
+                                          ++ [Constant name
+                                                       (Type theType
+                                                             declaredType)
+                                                       isMagic]
+                                    },
+                                  currentFunction,
+                                  currentClass)
+                               _ -> (framework, currentFunction, currentClass)
             "enum" -> let maybeName = lookup "name" attributes
                           maybeValue = valueByArchitecture
                       in case (maybeName, maybeValue) of
@@ -433,12 +453,12 @@ gotBeginElement ioRef elementName' attributes' = do
                                           then FloatEnum name (read value)
                                           else IntEnum name (read value)
                              in (framework {
-                                   frameworkEnums
-                                     = frameworkEnums framework
-                                       ++ [enum]
-                                 },
-                                 currentFunction)
-                           _ -> (framework, currentFunction)
+                                     frameworkEnums
+                                       = frameworkEnums framework
+                                         ++ [enum]
+                                   },
+                                 currentFunction, currentClass)
+                           _ -> (framework, currentFunction, currentClass)
             "string_constant" ->
               let maybeName = lookup "name" attributes
                   maybeValue = lookup "value" attributes
@@ -452,23 +472,41 @@ gotBeginElement ioRef elementName' attributes' = do
                             = frameworkStringConstants framework
                               ++ [StringConstant name value isNSString]
                         },
-                      currentFunction)
-                   _ -> (framework, currentFunction)
-            "function" -> let theName = fromJust $ lookup "name" attributes
-                          in (framework,
-                              Just $ Function theName Void [])
+                      currentFunction, currentClass)
+                   _ -> (framework, currentFunction, currentClass)
+            "function" -> let maybeName = lookup "name" attributes
+                          in case maybeName of
+                               Just name ->
+                                 (framework,
+                                  Just $ Function name Void [],
+                                  currentClass)
+                               _ -> (framework, currentFunction, currentClass)
             "function_alias" ->
-              let theName = fromJust $ lookup "name" attributes
-                  theOriginal = fromJust $ lookup "original" attributes
-              in (framework {
-                      frameworkFunctionAliases
-                        = frameworkFunctionAliases framework
-                          ++ [FunctionAlias theName theOriginal]
-                    },
-                  currentFunction)
+              let maybeName = lookup "name" attributes
+                  maybeOriginal = lookup "original" attributes
+              in case (maybeName, maybeOriginal) of
+                   (Just name, Just original) ->
+                     (framework {
+                          frameworkFunctionAliases
+                            = frameworkFunctionAliases framework
+                              ++ [FunctionAlias name original]
+                        },
+                      currentFunction,
+                      currentClass)
+                   _ -> (framework, currentFunction, currentClass)
+            "class" ->
+              let maybeName = lookup "name" attributes
+              in case maybeName of
+                   Just name ->
+                     (framework,
+                      currentFunction,
+                      Just $ Class {
+                                 className = name
+                               })
+                   _ -> (framework, currentFunction, currentClass)
             "retval" -> 
               case currentFunction of
-                Nothing -> (framework, currentFunction)
+                Nothing -> (framework, currentFunction, currentClass)
                 Just _ ->
                   let maybeType = typeByArchitecture
                       declaredType
@@ -481,11 +519,12 @@ gotBeginElement ioRef elementName' attributes' = do
                          (framework,
                           Just $ Function functionName
                                           (Type theType declaredType)
-                                          arguments)
-                       _ -> (framework, currentFunction)
+                                          arguments,
+                          currentClass)
+                       _ -> (framework, currentFunction, currentClass)
             "arg" ->
               case currentFunction of
-                Nothing -> (framework, currentFunction)
+                Nothing -> (framework, currentFunction, currentClass)
                 Just _ ->
                   let theName = fromMaybe "argument" $ lookup "name" attributes
                       maybeType = typeByArchitecture
@@ -500,12 +539,14 @@ gotBeginElement ioRef elementName' attributes' = do
                          in (framework,
                              Just $ Function functionName
                                              returnType
-                                             (arguments ++ [argument]))
-                       _ -> (framework, currentFunction)
-            _ -> (framework, currentFunction)
+                                             (arguments ++ [argument]),
+                             currentClass)
+                       _ -> (framework, currentFunction, currentClass)
+            _ -> (framework, currentFunction, currentClass)
   writeIORef ioRef $ parseState {
                           parseStateFramework = framework',
-                          parseStateCurrentFunction = currentFunction'
+                          parseStateCurrentFunction = currentFunction',
+                          parseStateCurrentClass = currentClass'
                        }
   return True
 
@@ -515,19 +556,33 @@ gotEndElement ioRef elementName' = do
   let elementName = TL.unpack $ nameLocalName $ elementName'
   parseState <- readIORef ioRef
   let framework = parseStateFramework parseState
-      currentFunction = parseStateCurrentFunction parseState
-      (framework', currentFunction')
+      maybeCurrentFunction = parseStateCurrentFunction parseState
+      maybeCurrentClass = parseStateCurrentClass parseState
+      (framework', maybeCurrentFunction', maybeCurrentClass')
         = case elementName of
-            "function" -> (framework {
-                               frameworkFunctions
-                                 = frameworkFunctions framework
-                                   ++ [fromJust currentFunction]
-                             },
-                           Nothing)
-            _ -> (framework, currentFunction)
+            "function" ->
+              case maybeCurrentFunction of
+                Just currentFunction -> (framework {
+                                             frameworkFunctions
+                                               = frameworkFunctions framework
+                                                 ++ [currentFunction]
+                                           },
+                                         Nothing,
+                                         maybeCurrentClass)
+            "class" ->
+              case maybeCurrentClass of
+                Just currentClass -> (framework {
+                                          frameworkClasses
+                                            = frameworkClasses framework
+                                              ++ [currentClass]
+                                        },
+                                      maybeCurrentFunction,
+                                      Nothing)
+            _ -> (framework, maybeCurrentFunction, maybeCurrentClass)
   writeIORef ioRef $ parseState {
                           parseStateFramework = framework',
-                          parseStateCurrentFunction = currentFunction'
+                          parseStateCurrentFunction = maybeCurrentFunction',
+                          parseStateCurrentClass = maybeCurrentClass'
                        }
   return True
 
