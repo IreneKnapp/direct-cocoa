@@ -83,6 +83,7 @@ data LinkageQualifier = ConstQualifier
                       | ByCopyQualifier
                       | ByReferenceQualifier
                       | OneWayQualifier
+                      | RetainedQualifier
                       deriving (Show, Data, Typeable)
 
 data DeclaredType = DeclaredType String
@@ -98,7 +99,16 @@ data TypeDefinition = OpaqueType String LinkageType Bool
                     deriving (Show, Data, Typeable)
 
 
-data TypeReference = Type LinkageType (Maybe DeclaredType)
+data TypeSemantics = PrintfFormat
+                   | CArrayLengthInArgument Int
+                   | CArrayDelimitedByNull
+                   | CArrayFixedLength Int
+                   | CArrayVariableLength
+                   | NotNull
+                   deriving (Show, Data, Typeable)
+
+
+data TypeReference = Type LinkageType (Maybe DeclaredType) (Maybe TypeSemantics)
                    | Void
                    deriving (Show, Data, Typeable)
 
@@ -115,6 +125,8 @@ data EnumDefinition = IntEnum String Int64
 data FunctionDefinition = Function String
                                    TypeReference
                                    [(Maybe String, TypeReference)]
+                                   Bool
+                                   Bool
                         deriving (Show, Data, Typeable)
 
 
@@ -145,10 +157,12 @@ data MethodDefinition
                 LinkageType
                 TypeReference
                 [(Maybe String, TypeReference)]
+                Bool
   | InstanceMethod Selector
                    LinkageType
                    TypeReference
                    [(Maybe String, TypeReference)]
+                   Bool
   deriving (Show, Data, Typeable)
 
 data Selector = Selector String
@@ -416,6 +430,46 @@ gotBeginElement ioRef elementName' attributes' = do
                                        (lookup "le_value" attributes)
                                        (lookup "be_value" attributes)
       
+      semantics :: Maybe TypeSemantics
+      semantics = let cArrayLengthInArgument
+                        = fmap read $ lookup "c_array_length_in_arg" attributes
+                      cArrayDelimitedByNull
+                        = case lookup "c_array_delimited_by_null" attributes of
+                            Just "true" -> True
+                            _ -> False
+                      cArrayFixedLength
+                        = fmap read
+                               $ lookup "c_array_of_fixed_length" attributes
+                      cArrayVariableLength
+                        = case lookup "c_array_of_variable_length" attributes of
+                            Just "true" -> True
+                            _ -> False
+                      printfFormat
+                        = case lookup "printf_format" attributes of
+                            Just "true" -> True
+                            _ -> False
+                      nullAccepted
+                        = case lookup "null_accepted" attributes of
+                            Just "false" -> False
+                            _ -> True
+                  in case () of
+                       () | printfFormat
+                            -> Just PrintfFormat
+                          | isJust cArrayLengthInArgument
+                            -> Just $ CArrayLengthInArgument
+                                       $ fromJust cArrayLengthInArgument
+                          | cArrayDelimitedByNull
+                            -> Just CArrayDelimitedByNull
+                          | isJust cArrayFixedLength
+                            -> Just $ CArrayFixedLength
+                                       $ fromJust cArrayFixedLength
+                          | cArrayVariableLength
+                            -> Just CArrayVariableLength
+                          | not nullAccepted
+                            -> Just NotNull
+                          | otherwise
+                            -> Nothing
+      
       computeUnusedAttributes :: [String] -> [(String, String)]
       computeUnusedAttributes usedAttributes =
         foldl (\results (key, value) ->
@@ -457,7 +511,9 @@ gotBeginElement ioRef elementName' attributes' = do
           "string_constant" -> computeUnusedAttributes ["name",
                                                         "value",
                                                         "nsstring"]
-          "function" -> computeUnusedAttributes ["name"]
+          "function" -> computeUnusedAttributes ["name",
+                                                 "variadic",
+                                                 "inline"]
           "function_alias" -> computeUnusedAttributes ["name",
                                                        "original"]
           "class" -> computeUnusedAttributes ["name"]
@@ -465,15 +521,35 @@ gotBeginElement ioRef elementName' attributes' = do
           "method" -> computeUnusedAttributes ["selector",
                                                "class_method",
                                                "type",
-                                               "type64"]
+                                               "type64",
+                                               "variadic",
+                                               "ignore",
+                                               "suggestion"]
           "retval" -> computeUnusedAttributes ["type",
                                                "type64",
-                                               "declared_type"]
+                                               "declared_type",
+                                               "already_retained",
+                                               "const",
+                                               "c_array_length_in_arg",
+                                               "c_array_delimited_by_null",
+                                               "c_array_of_fixed_length",
+                                               "c_array_of_variable_length",
+                                               "printf_format",
+                                               "null_accepted"]
           "arg" -> computeUnusedAttributes ["name",
                                             "type",
                                             "type64",
+                                            "type_modifier",
+                                            "const",
                                             "declared_type",
-                                            "index"]
+                                            "index",
+                                            "c_array_length_in_arg",
+                                            "c_array_delimited_by_null",
+                                            "c_array_of_fixed_length",
+                                            "c_array_of_variable_length",
+                                            "printf_format",
+                                            "null_accepted"]
+          "field" -> computeUnusedAttributes ["name"]
           _ -> computeUnusedAttributes []
       
       newParseState :: ParseState
@@ -564,7 +640,9 @@ gotBeginElement ioRef elementName' attributes' = do
                                  frameworkConstants
                                    = frameworkConstants framework
                                      ++ [Constant name
-                                                  (Type theType declaredType)
+                                                  (Type theType
+                                                        declaredType
+                                                        Nothing)
                                                   isMagic]
                                }
                        }
@@ -605,11 +683,17 @@ gotBeginElement ioRef elementName' attributes' = do
                    _ -> oldParseState
             "function" ->
               let maybeName = lookup "name" attributes
+                  isVariadic = case lookup "variadic" attributes of
+                                 Just "true" -> True
+                                 _ -> False
+                  isInline = case lookup "inline" attributes of
+                               Just "inline" -> True
+                               _ -> False
               in case maybeName of
                    Just name ->
                      oldParseState {
                          parseStateCurrentFunction
-                           = Just $ Function name Void []
+                           = Just $ Function name Void [] isVariadic isInline
                        }
                    _ -> oldParseState
             "function_alias" ->
@@ -661,36 +745,90 @@ gotBeginElement ioRef elementName' attributes' = do
                                   Just "true" -> True
                                   _ -> False
                   maybeType = typeByArchitecture True
+                  isVariadic = case lookup "variadic" attributes of
+                                 Just "true" -> True
+                                 _ -> False
               in case (maybeSelector, maybeType) of
                    (Just selector, Just theType) ->
                      oldParseState {
                          parseStateCurrentMethod
                            = Just
                              $ if classMethod
-                                 then ClassMethod selector theType Void []
-                                 else InstanceMethod selector theType Void []
+                                 then ClassMethod selector
+                                                  theType
+                                                  Void
+                                                  []
+                                                  isVariadic
+                                 else InstanceMethod selector
+                                                     theType
+                                                     Void
+                                                     []
+                                                     isVariadic
                        }
                    _ -> oldParseState
             "retval" -> 
               let maybeType = typeByArchitecture False
                   maybeDeclaredType = fmap parseDeclaredType
                                            $ lookup "declared_type" attributes
-              in case maybeType of
+                  isAlreadyRetained =
+                    case lookup "already_retained" attributes of
+                      Just "true" -> True
+                      _ -> False
+                  maybeQualifiedType =
+                    if isAlreadyRetained
+                      then fmap (qualifyLinkageType RetainedQualifier)
+                                maybeType
+                      else maybeType
+                  isConst = case lookup "const" attributes of
+                              Just "true" -> True
+                              _ -> False
+                  maybePrettyType =
+                    if isConst
+                      then fmap (qualifyLinkageType ConstQualifier)
+                                maybeQualifiedType
+                      else maybeQualifiedType
+                  maybeSemantics = semantics
+              in case maybePrettyType of
                    Just theType ->
                      oldParseState {
                          parseStateCurrentReturnValue
-                           = Just $ Type theType maybeDeclaredType
+                           = Just $ Type theType
+                                         maybeDeclaredType
+                                         maybeSemantics
                        }
                    _ -> oldParseState
             "arg" ->
               let maybeName = lookup "name" attributes
                   maybeType = typeByArchitecture False
+                  maybeTypeQualifier = case lookup "type_modifier" attributes of
+                                         Nothing -> Nothing
+                                         Just "n" -> Just InQualifier
+                                         Just "o" -> Just OutQualifier
+                                         Just "N" -> Just InOutQualifier
+                  maybeQualifiedType =
+                    case maybeTypeQualifier of
+                      Nothing -> maybeType
+                      Just typeQualifier ->
+                        fmap (qualifyLinkageType typeQualifier)
+                             maybeType
+                  isConst = case lookup "const" attributes of
+                              Just "true" -> True
+                              _ -> False
+                  maybePrettyType =
+                    if isConst
+                      then fmap (qualifyLinkageType ConstQualifier)
+                                maybeQualifiedType
+                      else maybeQualifiedType
                   maybeDeclaredType
                     = fmap parseDeclaredType
                            $ lookup "declared_type" attributes
-              in case maybeType of
+                  maybeSemantics = semantics
+              in case maybePrettyType of
                    Just theType ->
-                     let argument = (maybeName, Type theType maybeDeclaredType)
+                     let argument = (maybeName,
+                                     Type theType
+                                          maybeDeclaredType
+                                          maybeSemantics)
                      in oldParseState {
                             parseStateCurrentArguments
                               = case parseStateCurrentArguments oldParseState of
@@ -720,8 +858,12 @@ gotEndElement ioRef elementName' = do
         = case elementName of
             "function" ->
               case parseStateCurrentFunction oldParseState of
-                Just (Function name _ _) ->
-                  let function = Function name returnValue arguments
+                Just (Function name _ _ isVariadic isInline) ->
+                  let function = Function name
+                                          returnValue
+                                          arguments
+                                          isVariadic
+                                          isInline
                       returnValue =
                         case parseStateCurrentReturnValue oldParseState of
                           Nothing -> Void
@@ -787,16 +929,18 @@ gotEndElement ioRef elementName' = do
                 Just currentMethod ->
                   let method =
                         case currentMethod of
-                          ClassMethod selector linkageType _ _ ->
+                          ClassMethod selector linkageType _ _ isVariadic ->
                             ClassMethod selector
                                         linkageType
                                         returnValue
                                         arguments
-                          InstanceMethod selector linkageType _ _ ->
+                                        isVariadic
+                          InstanceMethod selector linkageType _ _ isVariadic ->
                             InstanceMethod selector
                                            linkageType
                                            returnValue
                                            arguments
+                                           isVariadic
                       returnValue =
                         case parseStateCurrentReturnValue oldParseState of
                           Nothing -> Void
@@ -911,13 +1055,6 @@ parseLinkageType _ isMethodSignature topLevelString =
                      Just (qualifyLinkageType OneWayQualifier linkageType,
                            rest)
       
-      qualifyLinkageType :: LinkageQualifier -> LinkageType -> LinkageType
-      qualifyLinkageType qualifier linkageType =
-        case linkageType of
-          QualifiedLinkageType otherQualifiers underlyingType ->
-            QualifiedLinkageType (otherQualifiers ++ [qualifier]) underlyingType
-          _ -> QualifiedLinkageType [qualifier] linkageType
-      
       parseSubtypes :: Char
                     -> String
                     -> Maybe (String,
@@ -981,6 +1118,14 @@ parseLinkageType _ isMethodSignature topLevelString =
                                                            (snd $ head allItems)
                                                            (tail allItems)
                  Nothing -> Nothing
+
+
+qualifyLinkageType :: LinkageQualifier -> LinkageType -> LinkageType
+qualifyLinkageType qualifier linkageType =
+  case linkageType of
+    QualifiedLinkageType otherQualifiers underlyingType ->
+      QualifiedLinkageType (otherQualifiers ++ [qualifier]) underlyingType
+    _ -> QualifiedLinkageType [qualifier] linkageType
 
 
 parseDeclaredType :: String -> DeclaredType
