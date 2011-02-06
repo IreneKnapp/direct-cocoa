@@ -5,6 +5,11 @@ declared_type attributes on several element types which are useful for
 Haskell with its strong type system, where two things having the same binary
 format are not necessarily treated identically.
 
+It's worth being aware that the XML provides information for multiple
+architectures in a single file.  We are set up to extract the information for
+any ONE architecture at a time.  Currently, we extract it for x86-64, because
+that's the most relevant.
+
 Note that we get almost everything we need from the XML; we don't need to use
 ObjC's runtime reflection capabilities much at all, nice though they are.  But,
 sadly, what we don't get without them is the class inheritance structure, so

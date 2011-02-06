@@ -40,7 +40,8 @@ data Framework = Framework {
     frameworkFunctions :: [FunctionDefinition],
     frameworkFunctionAliases :: [FunctionAliasDefinition],
     frameworkStringConstants :: [StringConstantDefinition],
-    frameworkClasses :: [ClassDefinition]
+    frameworkClasses :: [ClassDefinition],
+    frameworkInformalProtocols :: [InformalProtocolDefinition]
   }
   deriving (Show, Data, Typeable)
 
@@ -71,6 +72,7 @@ data LinkageType = CharLinkageType
                  | PointerLinkageType LinkageType
                  | UnknownLinkageType
                  | QualifiedLinkageType [LinkageQualifier] LinkageType
+                 | MethodLinkageType LinkageType Int [(LinkageType, Int)]
                  deriving (Show, Data, Typeable)
 
 
@@ -130,9 +132,23 @@ data ClassDefinition = Class {
   }
   deriving (Show, Data, Typeable)
 
+
+data InformalProtocolDefinition = InformalProtocol {
+    informalProtocolName :: String,
+    informalProtocolMethods :: [MethodDefinition]
+  }
+  deriving (Show, Data, Typeable)
+
+
 data MethodDefinition
-  = ClassMethod Selector TypeReference [(Maybe String, TypeReference)]
-  | InstanceMethod Selector TypeReference [(Maybe String, TypeReference)]
+  = ClassMethod Selector
+                LinkageType
+                TypeReference
+                [(Maybe String, TypeReference)]
+  | InstanceMethod Selector
+                   LinkageType
+                   TypeReference
+                   [(Maybe String, TypeReference)]
   deriving (Show, Data, Typeable)
 
 data Selector = Selector String
@@ -144,6 +160,8 @@ data ParseState = ParseState {
     parseStateFramework :: Framework,
     parseStateCurrentFunction :: Maybe FunctionDefinition,
     parseStateCurrentClass :: Maybe ClassDefinition,
+    parseStateCurrentInformalProtocol :: Maybe InformalProtocolDefinition,
+    parseStateCurrentMethodCollection :: Maybe [MethodDefinition],
     parseStateCurrentMethod :: Maybe MethodDefinition,
     parseStateCurrentReturnValue :: Maybe TypeReference,
     parseStateCurrentArguments :: Maybe [(Maybe String, TypeReference)]
@@ -154,27 +172,27 @@ main :: IO ()
 main = do
   let architecture = Architecture SixtyFourBit LittleEndian
   frameworks <- processFramework architecture "Cocoa"
-  mapM_ (\classDefinition -> do
-           putStrLn $ (className classDefinition)
+  mapM_ (\informalProtocol -> do
+           putStrLn $ informalProtocolName informalProtocol
                       ++ " has " ++
                       (show
                        $ gcount
-                          (mkQ False
-                               (\method -> case method of
-                                             ClassMethod _ _ _ -> True
-                                             InstanceMethod _ _ _ -> False))
-                          classDefinition)
+                           (mkQ False
+                                $ \method -> case method of
+                                               ClassMethod _ _ _ _ -> True
+                                               InstanceMethod _ _ _ _ -> False)
+                           $ informalProtocolMethods informalProtocol)
                       ++ " class methods and " ++
                       (show
                        $ gcount
-                          (mkQ False
-                               (\method -> case method of
-                                             ClassMethod _ _ _ -> False
-                                             InstanceMethod _ _ _ -> True))
-                          classDefinition)
+                           (mkQ False
+                                $ \method -> case method of
+                                               ClassMethod _ _ _ _ -> False
+                                               InstanceMethod _ _ _ _ -> True)
+                           $ informalProtocolMethods informalProtocol)
                       ++ " instance methods."
            hFlush stdout)
-        $ concat $ map frameworkClasses frameworks
+        $ concat $ map frameworkInformalProtocols frameworks
   putStrLn $ "All done!"
 
 
@@ -322,6 +340,10 @@ loadBridgeSupport architecture frameworkName location = do
                             = Nothing,
                           parseStateCurrentClass
                             = Nothing,
+                          parseStateCurrentInformalProtocol
+                            = Nothing,
+                          parseStateCurrentMethodCollection
+                            = Nothing,
                           parseStateCurrentMethod
                             = Nothing,
                           parseStateCurrentReturnValue
@@ -349,7 +371,8 @@ emptyFramework name = Framework {
                         frameworkFunctions = [],
                         frameworkFunctionAliases = [],
                         frameworkStringConstants = [],
-                        frameworkClasses = []
+                        frameworkClasses = [],
+                        frameworkInformalProtocols = []
                       }
 
 
@@ -399,11 +422,12 @@ gotBeginElement ioRef elementName' attributes' = do
             Architecture ThirtyTwoBit LittleEndian ->
               listToMaybe $ catMaybes [maybeLE, maybeDefault]
       
-      typeByArchitecture :: Maybe LinkageType
-      typeByArchitecture
+      typeByArchitecture :: Bool -> Maybe LinkageType
+      typeByArchitecture isMethodSignature
         = case chooseByBitSize (lookup "type" attributes)
                                (lookup "type64" attributes) of
-            Just theType -> parseLinkageType architecture theType
+            Just theType ->
+              parseLinkageType architecture isMethodSignature theType
             Nothing -> Nothing
       
       valueByArchitecture :: Maybe String
@@ -431,7 +455,7 @@ gotBeginElement ioRef elementName' attributes' = do
                    _ -> oldParseState
             "opaque" ->
               let maybeName = lookup "name" attributes
-                  maybeType = typeByArchitecture
+                  maybeType = typeByArchitecture False
                   isMagic = case lookup "magic_cookie" attributes of
                               Just "true" -> True
                               _ -> False
@@ -448,7 +472,7 @@ gotBeginElement ioRef elementName' attributes' = do
                    _ -> oldParseState
             "struct" ->
               let maybeName = lookup "name" attributes
-                  maybeType = typeByArchitecture
+                  maybeType = typeByArchitecture False
                   opaque = case lookup "opaque" attributes of
                              Just "true" -> True
                              _ -> False
@@ -465,7 +489,7 @@ gotBeginElement ioRef elementName' attributes' = do
                    _ -> oldParseState
             "cftype" ->
               let maybeName = lookup "name" attributes
-                  maybeType = typeByArchitecture
+                  maybeType = typeByArchitecture False
                   maybeTollfree = lookup "tollfree" attributes
                   maybeTypeIDFunctionName
                     = lookup "gettypeid_func" attributes
@@ -486,7 +510,7 @@ gotBeginElement ioRef elementName' attributes' = do
                    _ -> oldParseState
             "constant" ->
               let maybeName = lookup "name" attributes
-                  maybeType = typeByArchitecture
+                  maybeType = typeByArchitecture False
                   isMagic = case lookup "magic_cookie" attributes of
                               Just "true" -> True
                               _ -> False
@@ -572,7 +596,23 @@ gotBeginElement ioRef elementName' attributes' = do
                            = Just $ Class {
                                className = name,
                                classMethods = []
-                             }
+                             },
+                         parseStateCurrentMethodCollection
+                           = Just []
+                       }
+                   _ -> oldParseState
+            "informal_protocol" ->
+              let maybeName = lookup "name" attributes
+              in case maybeName of
+                   Just name ->
+                     oldParseState {
+                         parseStateCurrentInformalProtocol
+                           = Just $ InformalProtocol {
+                               informalProtocolName = name,
+                               informalProtocolMethods = []
+                             },
+                         parseStateCurrentMethodCollection
+                           = Just []
                        }
                    _ -> oldParseState
             "method" ->
@@ -581,17 +621,19 @@ gotBeginElement ioRef elementName' attributes' = do
                   classMethod = case lookup "class_method" attributes of
                                   Just "true" -> True
                                   _ -> False
-              in case maybeSelector of
-                   Just selector ->
+                  maybeType = typeByArchitecture True
+              in case (maybeSelector, maybeType) of
+                   (Just selector, Just theType) ->
                      oldParseState {
                          parseStateCurrentMethod
-                           = Just $ if classMethod
-                                      then ClassMethod selector Void []
-                                      else InstanceMethod selector Void []
+                           = Just
+                             $ if classMethod
+                                 then ClassMethod selector theType Void []
+                                 else InstanceMethod selector theType Void []
                        }
                    _ -> oldParseState
             "retval" -> 
-              let maybeType = typeByArchitecture
+              let maybeType = typeByArchitecture False
                   maybeDeclaredType = fmap parseDeclaredType
                                            $ lookup "declared_type" attributes
               in case maybeType of
@@ -603,7 +645,7 @@ gotBeginElement ioRef elementName' attributes' = do
                    _ -> oldParseState
             "arg" ->
               let maybeName = lookup "name" attributes
-                  maybeType = typeByArchitecture
+                  maybeType = typeByArchitecture False
                   maybeDeclaredType
                     = fmap parseDeclaredType
                            $ lookup "declared_type" attributes
@@ -657,27 +699,61 @@ gotEndElement ioRef elementName' = do
                        }
                 _ -> oldParseState
             "class" ->
-              case parseStateCurrentClass oldParseState of
-                Just currentClass ->
-                  oldParseState {
-                      parseStateFramework
-                        = framework {
-                              frameworkClasses
-                                = frameworkClasses framework
-                                  ++ [currentClass]
-                            },
-                      parseStateCurrentClass
-                        = Nothing
-                    }
+              case (parseStateCurrentClass oldParseState,
+                    parseStateCurrentMethodCollection oldParseState) of
+                (Just currentClass, Just methodCollection) ->
+                  let theClass = currentClass {
+                                     classMethods = methodCollection
+                                   }
+                  in oldParseState {
+                        parseStateFramework
+                          = framework {
+                                frameworkClasses
+                                  = frameworkClasses framework
+                                    ++ [theClass]
+                              },
+                        parseStateCurrentClass
+                          = Nothing,
+                        parseStateCurrentMethodCollection
+                          = Nothing
+                      }
+                _ -> oldParseState
+            "informal_protocol" ->
+              case (parseStateCurrentInformalProtocol oldParseState,
+                    parseStateCurrentMethodCollection oldParseState) of
+                (Just currentInformalProtocol, Just methodCollection) ->
+                  let informalProtocol
+                        = currentInformalProtocol {
+                              informalProtocolMethods = methodCollection
+                            }
+                  in oldParseState {
+                        parseStateFramework
+                          = framework {
+                                frameworkInformalProtocols
+                                  = frameworkInformalProtocols framework
+                                    ++ [informalProtocol]
+                              },
+                        parseStateCurrentInformalProtocol
+                          = Nothing,
+                        parseStateCurrentMethodCollection
+                          = Nothing
+                      }
                 _ -> oldParseState
             "method" ->
               case parseStateCurrentMethod oldParseState of
                 Just currentMethod ->
-                  let method = case currentMethod of
-                                 ClassMethod name _ _ ->
-                                   ClassMethod name returnValue arguments
-                                 InstanceMethod name _ _ ->
-                                   InstanceMethod name returnValue arguments
+                  let method =
+                        case currentMethod of
+                          ClassMethod selector linkageType _ _ ->
+                            ClassMethod selector
+                                        linkageType
+                                        returnValue
+                                        arguments
+                          InstanceMethod selector linkageType _ _ ->
+                            InstanceMethod selector
+                                           linkageType
+                                           returnValue
+                                           arguments
                       returnValue =
                         case parseStateCurrentReturnValue oldParseState of
                           Nothing -> Void
@@ -686,15 +762,11 @@ gotEndElement ioRef elementName' = do
                         case parseStateCurrentArguments oldParseState of
                           Nothing -> []
                           Just arguments -> arguments
-                  in case parseStateCurrentClass oldParseState of
-                       Just currentClass ->
+                  in case parseStateCurrentMethodCollection oldParseState of
+                       Just methods ->
                          oldParseState {
-                             parseStateCurrentClass
-                               = Just $ currentClass {
-                                            classMethods
-                                               = classMethods currentClass
-                                                 ++ [method]
-                                          },
+                             parseStateCurrentMethodCollection
+                               = Just $ methods ++ [method],
                              parseStateCurrentMethod
                                = Nothing
                            }
@@ -708,8 +780,8 @@ gotEndElement ioRef elementName' = do
   return True
 
 
-parseLinkageType :: Architecture -> String -> Maybe LinkageType
-parseLinkageType _ topLevelString =
+parseLinkageType :: Architecture -> Bool -> String -> Maybe LinkageType
+parseLinkageType _ isMethodSignature topLevelString =
   let takeLinkageType :: String -> Maybe (LinkageType, String)
       takeLinkageType string =
         case head string of
@@ -837,9 +909,35 @@ parseLinkageType _ topLevelString =
              Nothing -> Just (name, Nothing, tail subtypeEncodings)
              Just (subtypes, rest) -> Just (name, Just subtypes, rest)
       
-  in case takeLinkageType topLevelString of
-       Just (theType, "") -> Just theType
-       _ -> Nothing
+  in if not isMethodSignature
+       then case takeLinkageType topLevelString of
+              Just (theType, "") -> Just theType
+              _ -> Nothing
+       else let takeItem :: String -> Maybe ((LinkageType, Int), String)
+                takeItem string =
+                  case takeLinkageType string of
+                    Just (linkageType, string') ->
+                      let (intString, string'') = span isDigit string'
+                      in case intString of
+                           "" -> Nothing
+                           _ -> let int = read intString
+                                in Just ((linkageType, int), string'')
+                    _ -> Nothing
+                
+                takeAllItems :: [(LinkageType, Int)]
+                             -> String
+                             -> Maybe [(LinkageType, Int)]
+                takeAllItems items string =
+                  case takeItem string of
+                    Just (item, "") -> Just $ items ++ [item]
+                    Just (item, string') ->
+                      takeAllItems (items ++ [item]) string'
+                    _ -> Nothing
+            in case takeAllItems [] topLevelString of
+                 Just allItems -> Just $ MethodLinkageType (fst $ head allItems)
+                                                           (snd $ head allItems)
+                                                           (tail allItems)
+                 Nothing -> Nothing
 
 
 parseDeclaredType :: String -> DeclaredType
