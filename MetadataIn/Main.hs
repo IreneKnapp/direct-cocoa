@@ -172,27 +172,6 @@ main :: IO ()
 main = do
   let architecture = Architecture SixtyFourBit LittleEndian
   frameworks <- processFramework architecture "Cocoa"
-  mapM_ (\informalProtocol -> do
-           putStrLn $ informalProtocolName informalProtocol
-                      ++ " has " ++
-                      (show
-                       $ gcount
-                           (mkQ False
-                                $ \method -> case method of
-                                               ClassMethod _ _ _ _ -> True
-                                               InstanceMethod _ _ _ _ -> False)
-                           $ informalProtocolMethods informalProtocol)
-                      ++ " class methods and " ++
-                      (show
-                       $ gcount
-                           (mkQ False
-                                $ \method -> case method of
-                                               ClassMethod _ _ _ _ -> False
-                                               InstanceMethod _ _ _ _ -> True)
-                           $ informalProtocolMethods informalProtocol)
-                      ++ " instance methods."
-           hFlush stdout)
-        $ concat $ map frameworkInformalProtocols frameworks
   putStrLn $ "All done!"
 
 
@@ -437,6 +416,66 @@ gotBeginElement ioRef elementName' attributes' = do
                                        (lookup "le_value" attributes)
                                        (lookup "be_value" attributes)
       
+      computeUnusedAttributes :: [String] -> [(String, String)]
+      computeUnusedAttributes usedAttributes =
+        foldl (\results (key, value) ->
+                 if not $ elem key usedAttributes
+                   then results ++ [(key, value)]
+                   else results)
+              []
+              attributes
+      
+      unusedAttributes :: [(String, String)]
+      unusedAttributes =
+        case elementName of
+          "signatures" -> computeUnusedAttributes ["version"]
+          "depends_on" -> computeUnusedAttributes ["path"]
+          "opaque" -> computeUnusedAttributes ["name",
+                                               "type",
+                                               "type64",
+                                               "magic_cookie"]
+          "struct" -> computeUnusedAttributes ["name",
+                                               "type",
+                                               "type64",
+                                               "opaque"]
+          "cftype" -> computeUnusedAttributes ["name",
+                                               "type",
+                                               "type64",
+                                               "tollfree",
+                                               "gettypeid_func"]
+          "constant" -> computeUnusedAttributes ["name",
+                                                 "type",
+                                                 "type64",
+                                                 "magic_cookie",
+                                                 "declared_type",
+                                                 "const"]
+          "enum" -> computeUnusedAttributes ["name",
+                                             "value",
+                                             "value64",
+                                             "le_value",
+                                             "be_value"]
+          "string_constant" -> computeUnusedAttributes ["name",
+                                                        "value",
+                                                        "nsstring"]
+          "function" -> computeUnusedAttributes ["name"]
+          "function_alias" -> computeUnusedAttributes ["name",
+                                                       "original"]
+          "class" -> computeUnusedAttributes ["name"]
+          "informal_protocol" -> computeUnusedAttributes ["name"]
+          "method" -> computeUnusedAttributes ["selector",
+                                               "class_method",
+                                               "type",
+                                               "type64"]
+          "retval" -> computeUnusedAttributes ["type",
+                                               "type64",
+                                               "declared_type"]
+          "arg" -> computeUnusedAttributes ["name",
+                                            "type",
+                                            "type64",
+                                            "declared_type",
+                                            "index"]
+          _ -> computeUnusedAttributes []
+      
       newParseState :: ParseState
       newParseState
         = case elementName of
@@ -661,6 +700,10 @@ gotBeginElement ioRef elementName' attributes' = do
                           }
                    _ -> oldParseState
             _ -> oldParseState
+  if not $ null unusedAttributes
+    then putStrLn $ "Unused attributes in " ++ elementName ++ ": "
+                    ++ show unusedAttributes
+    else return ()
   writeIORef ioRef newParseState
   return True
 
