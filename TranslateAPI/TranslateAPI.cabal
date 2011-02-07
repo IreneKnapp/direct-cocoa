@@ -1,4 +1,4 @@
-Name:                MetadataIn
+Name:                TranslateAPI
 Version:             1.0
 Cabal-version:       >=1.2
 Build-type:          Simple
@@ -15,8 +15,11 @@ Description:
   Note that although the support is there for 32-bit and/or big-endian architectures,
   currently I am only testing with 64-bit little-endian architectures.
 
-Executable MetadataIn
+Executable TranslateAPI
   Main-is: Main.hs
+  Other-modules: Types,
+                 Util,
+                 BridgeSupport
   Build-depends: base >= 4.3.1.0 && < 5,
                  directory >= 1.1.0.0 && < 2,
                  direct-xml-expat >= 1.0 && < 2,
