@@ -12,7 +12,9 @@ import System.IO
 
 import Types
 import Util
+import Paths
 import BridgeSupport
+import Reflection
 
 
 data OperationMode = Help HelpTopic
@@ -42,11 +44,10 @@ main = do
             ["translate", directory]
               -> Translate directory
             _ -> Help HelpUsage
+  let architecture = Architecture SixtyFourBit LittleEndian
   case operationMode of
     Help topic -> help topic
     Report reportType filePath -> do
-      banner "Loading API..."
-      let architecture = Architecture SixtyFourBit LittleEndian
       frameworks <- processFramework architecture "Cocoa"
       banner "Writing report..."
       withFile filePath WriteMode
@@ -61,8 +62,6 @@ main = do
       if existsAsFile || existsAsDirectory
         then error "Refusing to overwrite preexisting output directory."
         else do
-          banner "Loading API..."
-          let architecture = Architecture SixtyFourBit LittleEndian
           frameworks <- processFramework architecture "Cocoa"
           banner "Writing translation..."
           translate directoryPath
@@ -257,6 +256,7 @@ processFramework architecture frameworkName = do
                 = map recoverFrameworkName $ frameworkDependencies framework
             }
   
+  banner "Loading BridgeSupport files..."
   putStrLn $ "Processing " ++ frameworkName ++ "."
   frameworkLocation <- findFrameworkOrError frameworkName
   bridgeSupportLocation
@@ -265,68 +265,9 @@ processFramework architecture frameworkName = do
     <- loadBridgeSupport architecture frameworkName bridgeSupportLocation
   (dependencies, _) <- chaseDependencies framework [frameworkName]
   framework <- return $ fixDependencyNames framework
-  return $ [framework] ++ dependencies
-
-
-findFramework :: String -> IO (Maybe FilePath)
-findFramework frameworkName = do
-  home <- getEnv "HOME"
-  foldM (\maybeResult parentDirectory -> do
-           case maybeResult of
-             Just _ -> return maybeResult
-             Nothing -> do
-               let fullPath = parentDirectory ++ frameworkName ++ ".framework/"
-               found <- doesDirectoryExist fullPath
-               if found
-                 then return $ Just fullPath
-                 else return Nothing)
-        Nothing
-        [home ++ "/Library/Frameworks/",
-         "/Library/Frameworks/",
-         "/System/Library/Frameworks/"]
-
-
-findFrameworkOrError :: String -> IO FilePath
-findFrameworkOrError frameworkName = do
-  maybeLocation <- findFramework frameworkName
-  case maybeLocation of
-    Nothing -> error $ "Unable to find framework " ++ frameworkName ++ "."
-    Just location -> return location
-
-
-findBridgeSupport :: String -> FilePath -> IO (Maybe FilePath)
-findBridgeSupport frameworkName frameworkLocation = do
-  frameworkLocation <- return $ case last frameworkLocation of
-                         '/' -> frameworkLocation
-                         _ -> frameworkLocation ++ "/"
-  home <- getEnv "HOME"
-  foldM (\maybeResult (parentDirectory, suffix) -> do
-           case maybeResult of
-             Just _ -> return maybeResult
-             Nothing -> do
-               let fullPath = parentDirectory
-                              ++ frameworkName
-                              ++ suffix
-                              ++ ".bridgesupport"
-               found <- doesFileExist fullPath
-               if found
-                 then return $ Just fullPath
-                 else return Nothing)
-        Nothing
-        [(frameworkLocation ++ "Resources/BridgeSupport/", "Full"),
-         ("/System/Library/BridgeSupport/", "Full"),
-         ("/Library/BridgeSupport/", "Full"),
-         (home ++ "/Library/BridgeSupport/", "Full"),
-         (frameworkLocation ++ "Resources/BridgeSupport/", ""),
-         ("/System/Library/BridgeSupport/", ""),
-         ("/Library/BridgeSupport/", ""),
-         (home ++ "/Library/BridgeSupport/", "")]
-
-
-findBridgeSupportOrError :: String -> FilePath -> IO FilePath
-findBridgeSupportOrError frameworkName frameworkLocation = do
-  maybeLocation <- findBridgeSupport frameworkName frameworkLocation
-  case maybeLocation of
-    Nothing -> error $ "Unable to find bridge support for framework "
-                       ++ frameworkName ++ "."
-    Just location -> return location
+  let frameworks = [framework] ++ dependencies
+  
+  banner "Augmenting with data from runtime reflection..."
+  frameworks <- loadReflectionData frameworks
+  
+  return frameworks

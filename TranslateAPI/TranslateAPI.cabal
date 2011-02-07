@@ -19,10 +19,13 @@ Executable TranslateAPI
   Main-is: Main.hs
   Other-modules: Types,
                  Util,
-                 BridgeSupport
+                 Paths,
+                 BridgeSupport,
+                 Reflection
   Build-depends: base >= 4.3.1.0 && < 5,
                  directory >= 1.1.0.0 && < 2,
                  direct-xml-expat >= 1.0 && < 2,
                  bytestring >= 0.9.1.10 && < 1,
                  text >= 0.11.0.2 && < 1,
                  syb >= 0.3 && < 1
+  Frameworks: Cocoa
