@@ -14,10 +14,86 @@ import Util
 import BridgeSupport
 
 
+data OperationMode = Help HelpTopic
+                   | Report ReportType FilePath
+                   | Translate FilePath
+
+
+data HelpTopic = HelpUsage
+               | HelpReports
+
+
+data ReportType = UnknownLinkageReport
+
+
 main :: IO ()
 main = do
-  let architecture = Architecture SixtyFourBit LittleEndian
-  frameworks <- processFramework architecture "Cocoa"
+  arguments <- getArgs
+  let operationMode
+        = case arguments of
+            ["help"] -> Help HelpUsage
+            ["report"] -> Help HelpReports
+            ["report", "unknown-linkage", filename]
+              -> Report UnknownLinkageReport filename
+            ["translate", directory]
+              -> Translate directory
+            _ -> Help HelpUsage
+  case operationMode of
+    Help topic -> help topic
+    Report reportType filePath -> do
+      banner "Loading API..."
+      let architecture = Architecture SixtyFourBit LittleEndian
+      frameworks <- processFramework architecture "Cocoa"
+      banner "Writing report..."
+      withFile filePath WriteMode
+               $ (case reportType of
+                    UnknownLinkageReport -> unknownLinkageReport)
+                 frameworks
+      banner "Done."
+    Translate directoryPath -> do
+      existsAsFile <- doesFileExist directoryPath
+      existsAsDirectory <- doesDirectoryExist directoryPath
+      if existsAsFile || existsAsDirectory
+        then error "Refusing to overwrite preexisting output directory."
+        else do
+          banner "Loading API..."
+          let architecture = Architecture SixtyFourBit LittleEndian
+          frameworks <- processFramework architecture "Cocoa"
+          banner "Writing translation..."
+          translate directoryPath
+          banner "Success deserves an exclamation point!"
+
+
+banner :: String -> IO ()
+banner string = do
+  putStrLn $ ""
+  putStrLn $ ""
+  putStrLn $ replicate (length string) '='
+  putStrLn $ string
+  putStrLn $ replicate (length string) '='
+  putStrLn $ ""
+
+
+help :: HelpTopic -> IO ()
+help HelpUsage = do
+  programName <- getProgName
+  putStrLn $ programName ++ " help"
+  putStrLn $ "    This message."
+  putStrLn $ programName ++ " report"
+  putStrLn $ "    A list of all possible reports."
+  putStrLn $ programName ++ " report <report-name> <output.txt>"
+  putStrLn $ "    Output the named report to the given file."
+  putStrLn $ programName ++ " translate <directory>"
+  putStrLn $ "    Create and populate the given directory with "
+             ++ "the translated API."
+help HelpReports = do
+  putStrLn $ "unknown-linkage"
+  putStrLn $ "    All type definitions with linkage types that are unknown."
+  putStrLn $ "  Useful for maintaining the exceptions file."
+
+
+unknownLinkageReport :: [Framework] -> Handle -> IO ()
+unknownLinkageReport frameworks handle = do
   mapM_ (\framework -> do
            mapM_ (\theType -> do
                     let unknownCount
@@ -28,11 +104,15 @@ main = do
                                             _ -> False)
                                    theType
                     if unknownCount > 0
-                      then putStrLn $ show theType
+                      then hPutStrLn handle $ show theType
                       else return ())
                  $ frameworkTypes framework)
         frameworks
-  putStrLn $ "All done!"
+
+
+translate :: FilePath -> IO ()
+translate directoryPath = do
+  createDirectory directoryPath
 
 
 processFramework :: Architecture -> String -> IO [Framework]
