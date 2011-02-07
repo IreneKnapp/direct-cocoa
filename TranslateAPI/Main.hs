@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Control.Monad
+import Data.Function
 import Data.Generics
 import qualified Data.List as L
 import Prelude hiding (error)
@@ -23,7 +24,8 @@ data HelpTopic = HelpUsage
                | HelpReports
 
 
-data ReportType = UnknownLinkageReport
+data ReportType = NamesReport
+                | UnknownLinkageReport
 
 
 main :: IO ()
@@ -33,6 +35,8 @@ main = do
         = case arguments of
             ["help"] -> Help HelpUsage
             ["report"] -> Help HelpReports
+            ["report", "names", filename]
+              -> Report NamesReport filename
             ["report", "unknown-linkage", filename]
               -> Report UnknownLinkageReport filename
             ["translate", directory]
@@ -47,6 +51,7 @@ main = do
       banner "Writing report..."
       withFile filePath WriteMode
                $ (case reportType of
+                    NamesReport -> namesReport
                     UnknownLinkageReport -> unknownLinkageReport)
                  frameworks
       banner "Done."
@@ -74,6 +79,16 @@ banner string = do
   putStrLn $ ""
 
 
+hBanner :: Handle -> String -> IO ()
+hBanner handle string = do
+  hPutStrLn handle $ ""
+  hPutStrLn handle $ ""
+  hPutStrLn handle $ replicate (length string) '='
+  hPutStrLn handle $ string
+  hPutStrLn handle $ replicate (length string) '='
+  hPutStrLn handle $ ""
+
+
 help :: HelpTopic -> IO ()
 help HelpUsage = do
   programName <- getProgName
@@ -90,6 +105,75 @@ help HelpReports = do
   putStrLn $ "unknown-linkage"
   putStrLn $ "    All type definitions with linkage types that are unknown."
   putStrLn $ "  Useful for maintaining the exceptions file."
+
+
+namesReport :: [Framework] -> Handle -> IO ()
+namesReport frameworks handle = do
+  mapM_ (\framework -> do
+          let typeItems =
+                map (\theType ->
+                       case theType of
+                         OpaqueType name _ _ -> ("opaque", name)
+                         StructureType name _ _ -> ("struct", name)
+                         CoreFoundationType name _ _ _ -> ("cftype", name))
+                    $ frameworkTypes framework
+              constantItems =
+                map (\(Constant name _ _) -> ("constant", name))
+                    $ frameworkConstants framework
+              enumItems =
+                map (\enum -> case enum of
+                                IntEnum name _ -> ("enum", name)
+                                FloatEnum name _ -> ("enum", name))
+                    $ frameworkEnums framework
+              stringConstantItems =
+                map (\(StringConstant name _ nsString) ->
+                       (if nsString
+                          then "nsstring"
+                          else "string",
+                        name))
+                    $ frameworkStringConstants framework
+              functionItems =
+                map (\(Function name _ _ _ _) -> ("function", name))
+                    $ frameworkFunctions framework
+              functionAliasItems =
+                map (\(FunctionAlias name _) -> ("function", name))
+                    $ frameworkFunctionAliases framework
+              classItems =
+                concat $ map (\theClass ->
+                                [("class", className theClass)]
+                                ++ (map methodItem $ classMethods theClass))
+                             $ frameworkClasses framework
+              informalProtocolItems =
+                concat $ map (\informalProtocol ->
+                                [("informal",
+                                  informalProtocolName informalProtocol)]
+                                ++ (map methodItem
+                                        $ informalProtocolMethods
+                                           informalProtocol))
+                             $ frameworkInformalProtocols framework
+              methodItem method =
+                case method of
+                  ClassMethod (Selector selector) _ _ _ _ ->
+                    ("method", selector)
+                  InstanceMethod (Selector selector) _ _ _ _ ->
+                    ("method", selector)
+              allItems = L.sortBy (on compare snd)
+                                  $ concat [typeItems,
+                                            constantItems,
+                                            enumItems,
+                                            stringConstantItems,
+                                            functionItems,
+                                            functionAliasItems,
+                                            classItems,
+                                            informalProtocolItems]
+          hBanner handle $ frameworkName framework
+          mapM (\(nameType, name) -> do
+                  hPutStrLn handle
+                            $ nameType
+                              ++ (replicate (10 - length nameType) ' ')
+                              ++ name)
+               allItems)
+      frameworks
 
 
 unknownLinkageReport :: [Framework] -> Handle -> IO ()
