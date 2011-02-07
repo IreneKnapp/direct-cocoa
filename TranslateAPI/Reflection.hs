@@ -3,6 +3,7 @@ module Reflection (loadReflectionData)
 
 import Types
 import Util
+import LibFFI
 
 
 loadReflectionData :: [Framework] -> IO [Framework]
