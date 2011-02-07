@@ -157,12 +157,6 @@ foreign import ccall "ffi_prep_closure" ffi_prep_closure
   -> FunPtr (CIF -> Ptr () -> Ptr (Ptr ()) -> Ptr () -> IO  ())
   -> Ptr ()
   -> IO CInt
-foreign import ccall "ffi_prep_raw_closure" ffi_prep_raw_closure
-  :: RawClosure
-  -> CIF
-  -> FunPtr (CIF -> Ptr () -> Raw -> Ptr () -> IO ())
-  -> Ptr ()
-  -> IO CInt
 foreign import ccall "ffi_prep_cif" ffi_prep_cif
   :: CIF -> CInt -> CUInt -> Type -> Ptr (Type) -> IO CInt
 foreign import ccall "ffi_call" ffi_call
