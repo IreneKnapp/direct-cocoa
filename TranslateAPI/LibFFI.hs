@@ -151,22 +151,6 @@ foreign import ccall "ffi_type_longdouble" typeLongDouble :: Type
 foreign import ccall "ffi_type_pointer" typePointer :: Type
 
 
-foreign import ccall "ffi_raw_call" ffi_raw_call
-  :: CIF -> Ptr () -> Ptr () -> Raw -> IO ()
-foreign import ccall "ffi_ptrarray_to_raw" ffi_ptrarray_to_raw
-  :: CIF -> Ptr (Ptr ()) -> Raw -> IO ()
-foreign import ccall "ffi_raw_to_ptrarray" ffi_raw_to_ptrarray
-  :: CIF -> Raw -> Ptr (Ptr ()) -> IO ()
-foreign import ccall "ffi_raw_size" ffi_raw_size
-  :: CIF -> IO CSize
-foreign import ccall "ffi_java_raw_call" ffi_java_raw_call
-  :: CIF -> FunPtr (IO ()) -> Ptr () -> Raw -> IO ()
-foreign import ccall "ffi_java_ptrarray_to_raw" ffi_java_ptrarray_to_raw
-  :: CIF -> Ptr (Ptr ()) -> Raw -> IO ()
-foreign import ccall "ffi_java_raw_to_ptrarray" ffi_java_raw_to_ptrarray
-  :: CIF ->  Raw -> Ptr (Ptr ()) -> IO ()
-foreign import ccall "ffi_java_raw_size" ffi_java_raw_size
-  :: CIF -> IO CSize
 foreign import ccall "ffi_prep_closure" ffi_prep_closure
   :: Closure
   -> CIF
@@ -174,12 +158,6 @@ foreign import ccall "ffi_prep_closure" ffi_prep_closure
   -> Ptr ()
   -> IO CInt
 foreign import ccall "ffi_prep_raw_closure" ffi_prep_raw_closure
-  :: RawClosure
-  -> CIF
-  -> FunPtr (CIF -> Ptr () -> Raw -> Ptr () -> IO ())
-  -> Ptr ()
-  -> IO CInt
-foreign import ccall "ffi_prep_java_raw_closure" ffi_prep_java_raw_closure
   :: RawClosure
   -> CIF
   -> FunPtr (CIF -> Ptr () -> Raw -> Ptr () -> IO ())
