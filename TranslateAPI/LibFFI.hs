@@ -20,11 +20,11 @@ module LibFFI ()
 -- We need to suppress inclusion of limits.h by ffi.h, because it makes
 -- unhelpful definitions of all the values I enumerate below, putting them
 -- in terms of gcc's predefined symbols, which we don't have access to.
--- To achieve the suppression, we can't simply #define _LIMITS_H_, for
--- reasons that aren't clear to me, but it doesn't work.  Might be a gcc
--- quirk designed to prevent users from accidentally stepping on symbols the
--- standard headers use for their internal purposes?  Anyway, since we can't
--- do that, we instead include limits.h ourselves so that it can set itself
+-- To achieve the suppression, we can't simply #define _LIMITS_H_, because
+-- of an arguable bug in gcc's cpp:  Macros that surround entire files are
+-- treated specially rather than as normal symbol definitions, as part of
+-- an optimization to avoid repeated lexing.  Anyway, since we can't do
+-- that, we instead include limits.h ourselves so that it can set itself
 -- up to not be included a second time.
 #include <limits.h>
 #undef SCHAR_MAX
