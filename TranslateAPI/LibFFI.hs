@@ -287,24 +287,24 @@ typeStructGivenElementFieldPtr theType index =
 
 typeStructIsStaticallyAllocated :: Type -> Bool
 typeStructIsStaticallyAllocated theType =
-  case () | theType == unsafeForeignPtrToPtr typeVoid -> True
-          | theType == unsafeForeignPtrToPtr typeUInt8 -> True
-          | theType == unsafeForeignPtrToPtr typeSInt8 -> True
-          | theType == unsafeForeignPtrToPtr typeUInt16 -> True
-          | theType == unsafeForeignPtrToPtr typeSInt16 -> True
-          | theType == unsafeForeignPtrToPtr typeUInt32 -> True
-          | theType == unsafeForeignPtrToPtr typeSInt32 -> True
-          | theType == unsafeForeignPtrToPtr typeUInt64 -> True
-          | theType == unsafeForeignPtrToPtr typeSInt64 -> True
-          | otherwise -> False
+  case () of () | theType == unsafeForeignPtrToPtr typeVoid -> True
+                | theType == unsafeForeignPtrToPtr typeUInt8 -> True
+                | theType == unsafeForeignPtrToPtr typeSInt8 -> True
+                | theType == unsafeForeignPtrToPtr typeUInt16 -> True
+                | theType == unsafeForeignPtrToPtr typeSInt16 -> True
+                | theType == unsafeForeignPtrToPtr typeUInt32 -> True
+                | theType == unsafeForeignPtrToPtr typeSInt32 -> True
+                | theType == unsafeForeignPtrToPtr typeUInt64 -> True
+                | theType == unsafeForeignPtrToPtr typeSInt64 -> True
+                | otherwise -> False
 
-
+{-
 typeStructGetTotalRecursiveSize :: Type -> IO Int
 typeStructGetTotalRecursiveSize theType = do
   if typeStructIsStaticallyAllocated theType
     then return 0
     else do
-
+-}
 
 typeStruct :: [Type] -> Type
 typeStruct fieldTypes = do
@@ -327,13 +327,13 @@ typeStruct fieldTypes = do
 foreign import ccall "ffi_prep_cif" ffi_prep_cif
   :: Ptr () -> CInt -> CUInt -> Ptr () -> Ptr (Ptr ()) -> IO CInt
 
-
+{-
 cif :: ABI -> Type -> [Type] -> IO CIF
 cif abi returnType argumentTypes = do
   cif <- mallocBytes ...
   status <- ffi_prep_cif cif 
   newForeignPtr finalizerFree cif
-
+-}
 
 foreign import ccall "ffi_call" ffi_call
   :: Ptr () -> Ptr () -> Ptr () -> Ptr (Ptr ()) -> IO ()

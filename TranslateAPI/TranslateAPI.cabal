@@ -10,17 +10,18 @@ License-file:        LICENSE
 Category:            System
 Synopsis:            Reads metadata from Mac OS X frameworks.
 Description:
-  Reads metadata from Mac OS X frameworks, generating appropriate Haskell types for
-  them.  Uses the BridgeSupport files included with the operating system to do so.
-  Note that although the support is there for 32-bit and/or big-endian architectures,
-  currently I am only testing with 64-bit little-endian architectures.
+  Reads metadata from Mac OS X frameworks, generating appropriate Haskell
+  types for them.  Uses the BridgeSupport files included with the operating 
+  system to do so.  Note that although the support is there for 32-bit and/or
+  big-endian architectures, currently I am only testing with 64-bit
+  little-endian architectures.
 
 Executable TranslateAPI
   Main-is: Main.hs
   Other-modules: Types,
                  Util,
                  Paths,
-                 LibFFI,
+                 -- LibFFI,
                  BridgeSupport,
                  Reflection
   Build-depends: base >= 4.3.1.0 && < 5,
