@@ -292,99 +292,104 @@ typeStructIsStaticallyAllocated theType =
                    | otherwise -> False
 
 
-typeStructGetTotalRecursiveSize :: Ptr () -> IO Int
-typeStructGetTotalRecursiveSize theType = do
-  if typeStructIsStaticallyAllocated theType
-    then return 0
-    else do
-      return 0
+typeStructFromType :: Type -> Ptr ()
+typeStructFromType (Type foundType) = unsafeForeignPtrToPtr foundType
+
+computeTypeStructSizeOneLevel :: [Ptr ()] -> Int
+computeTypeStructSizeOneLevel typeStructs = typeStructSizeFieldSize
+                                  + typeStructAlignmentFieldSize
+                                  + typeStructTypeFieldSize
+                                  + typeStructElementsFieldSize
+                                  + (1 + length typeStructs)
+                                    * typeStructEachElementFieldSize
+
+
+getTypeStructSizeOneLevelAndDown :: [Ptr ()] -> IO Int
+getTypeStructSizeOneLevelAndDown typeStructs = do
+  let sizeOneLevel = computeTypeStructSizeOneLevel typeStructs
+  foldM (\result typeStruct -> do
+          if typeStructIsStaticallyAllocated typeStruct
+            then return result
+            else do
+              childTypeStructs <- peekTypeStructOneLevel typeStruct
+              sizeChild <- getTypeStructSizeOneLevelAndDown childTypeStructs
+              return $ result + sizeChild)
+        (computeTypeStructSizeOneLevel typeStructs)
+        typeStructs
+
+
+pokeTypeStructOneLevel :: Ptr () -> [Ptr ()] -> IO ()
+pokeTypeStructOneLevel typeStruct fieldTypeStructs = do
+  poke (typeStructSizeFieldPtr typeStruct) 0
+  poke (typeStructAlignmentFieldPtr typeStruct) 0
+  poke (typeStructTypeFieldPtr typeStruct) 13
+  poke (typeStructElementsFieldPtr typeStruct)
+       (typeStructGivenElementFieldPtr typeStruct 0)
+  mapM_ (\(fieldTypeStruct, index) ->
+           poke (typeStructGivenElementFieldPtr typeStruct index)
+                fieldTypeStruct)
+        $ zip fieldTypeStructs [0..]
+  poke (typeStructGivenElementFieldPtr typeStruct
+                                       (length fieldTypeStructs))
+       nullPtr
+
+
+pokeTypeStructOneLevelAndDown :: Ptr () -> [Ptr ()] -> IO ()
+pokeTypeStructOneLevelAndDown typeStruct fieldTypeStructs = do
+  (newFieldTypeStructs, _)
+    <- foldM (\(newFieldTypeStructs, newFieldTypeStruct)
+               oldFieldTypeStruct -> do
+                 isStruct <- peekTypeStructIsStruct oldFieldTypeStruct
+                 if isStruct
+                   then do
+                     immediateSubfields
+                       <- peekTypeStructOneLevel oldFieldTypeStruct
+                     pokeTypeStructOneLevelAndDown newFieldTypeStruct 
+                                                   immediateSubfields
+                     let nextNewFieldTypeStruct =
+                           incrementTypeStructPtr newFieldTypeStruct
+                                                  immediateSubfields
+                     return (newFieldTypeStructs ++ [newFieldTypeStruct],
+                             nextNewFieldTypeStruct)
+                   else return (newFieldTypeStructs
+                                ++ [oldFieldTypeStruct],
+                                newFieldTypeStruct))
+             ([], incrementTypeStructPtr typeStruct fieldTypeStructs)
+             fieldTypeStructs
+  pokeTypeStructOneLevel typeStruct newFieldTypeStructs
+
+
+peekTypeStructIsStruct :: Ptr () -> IO Bool
+peekTypeStructIsStruct typeStruct = do
+  typeField <- peek $ typeStructTypeFieldPtr typeStruct
+  return $ typeField == 13
+
+
+peekTypeStructOneLevel :: Ptr () -> IO [Ptr ()]
+peekTypeStructOneLevel typeStruct = do
+  let loop results givenElementFieldPtr = do
+        possibleResult <- peek givenElementFieldPtr
+        if possibleResult == nullPtr
+          then return results
+          else loop (results ++ [possibleResult])
+                    (plusPtr givenElementFieldPtr
+                             (sizeOf (undefined :: Ptr ())))
+  firstGivenElementFieldPtr
+    <- peek $ typeStructElementsFieldPtr typeStruct
+  loop [] firstGivenElementFieldPtr
+
+
+incrementTypeStructPtr :: Ptr () -> [Ptr ()] -> Ptr ()
+incrementTypeStructPtr typeStruct fieldTypeStructs =
+  plusPtr typeStruct $ computeTypeStructSizeOneLevel fieldTypeStructs
 
 
 typeStruct :: [Type] -> Type
 typeStruct topLevelFieldTypes = unsafePerformIO $ do
-  let fromType :: Type -> Ptr ()
-      fromType (Type foundType) = unsafeForeignPtrToPtr foundType
-      
-      computeSizeOneLevel :: [Ptr ()] -> Int
-      computeSizeOneLevel typeStructs = typeStructSizeFieldSize
-                                        + typeStructAlignmentFieldSize
-                                        + typeStructTypeFieldSize
-                                        + typeStructElementsFieldSize
-                                        + (1 + length typeStructs)
-                                          * typeStructEachElementFieldSize
-      
-      getSizeOneLevelAndDown :: [Ptr ()] -> IO Int
-      getSizeOneLevelAndDown typeStructs = do
-        let sizeOneLevel = computeSizeOneLevel typeStructs
-        foldM (\result typeStruct -> do
-                if typeStructIsStaticallyAllocated typeStruct
-                  then return result
-                  else do
-                    childTypeStructs <- peekOneLevel typeStruct
-                    sizeChild <- getSizeOneLevelAndDown childTypeStructs
-                    return $ result + sizeChild
-                  )
-              (computeSizeOneLevel typeStructs)
-              typeStructs
-      
-      pokeOneLevel :: Ptr () -> [Ptr ()] -> IO ()
-      pokeOneLevel typeStruct fieldTypeStructs = do
-        poke (typeStructSizeFieldPtr typeStruct) 0
-        poke (typeStructAlignmentFieldPtr typeStruct) 0
-        poke (typeStructTypeFieldPtr typeStruct) 13
-        poke (typeStructElementsFieldPtr typeStruct)
-             (typeStructGivenElementFieldPtr typeStruct 0)
-        mapM_ (\(fieldTypeStruct, index) ->
-                 poke (typeStructGivenElementFieldPtr typeStruct index)
-                      fieldTypeStruct)
-              $ zip fieldTypeStructs [0..]
-        poke (typeStructGivenElementFieldPtr typeStruct
-                                             (length fieldTypeStructs))
-             nullPtr
-      
-      pokeOneLevelAndDown :: Ptr () -> [Ptr ()] -> IO ()
-      pokeOneLevelAndDown typeStruct fieldTypeStructs = do
-        (newFieldTypeStructs, _)
-          <- foldM (\(newFieldTypeStructs, newFieldTypeStruct)
-                     fieldTypeStruct -> do
-                       immediateSubfields <- peekOneLevel fieldTypeStruct
-                       let nextNewFieldTypeStruct =
-                             incrementStructPtr newFieldTypeStruct
-                                                immediateSubfields
-                       return (newFieldTypeStructs ++ [newFieldTypeStruct],
-                               nextNewFieldTypeStruct))
-                   ([], incrementStructPtr typeStruct fieldTypeStructs)
-                   fieldTypeStructs
-        pokeOneLevel typeStruct newFieldTypeStructs
-      
-      peekIsStruct :: Ptr () -> IO Bool
-      peekIsStruct typeStruct = do
-        typeField <- peek $ typeStructTypeFieldPtr typeStruct
-        return $ typeField == 13
-      
-      peekOneLevel :: Ptr () -> IO [Ptr ()]
-      peekOneLevel typeStruct = do
-        let loop results givenElementFieldPtr = do
-              possibleResult <- peek givenElementFieldPtr
-              if possibleResult == nullPtr
-                then return results
-                else loop (results ++ [possibleResult])
-                          (plusPtr givenElementFieldPtr
-                                   (sizeOf (undefined :: Ptr ())))
-        firstGivenElementFieldPtr
-          <- peek $ typeStructElementsFieldPtr typeStruct
-        loop [] firstGivenElementFieldPtr
-      
-      incrementStructPtr :: Ptr () -> [Ptr ()] -> Ptr ()
-      incrementStructPtr typeStruct fieldTypeStructs =
-        plusPtr typeStruct $ computeSizeOneLevel fieldTypeStructs
-      
-      topLevelTypeStructs :: [Ptr ()]
-      topLevelTypeStructs = map fromType topLevelFieldTypes
-  
-  totalSize <- getSizeOneLevelAndDown topLevelTypeStructs
+  let topLevelTypeStructs = map typeStructFromType topLevelFieldTypes
+  totalSize <- getTypeStructSizeOneLevelAndDown topLevelTypeStructs
   typeStruct <- mallocBytes totalSize
-  pokeOneLevelAndDown typeStruct topLevelTypeStructs
+  pokeTypeStructOneLevelAndDown typeStruct topLevelTypeStructs
   newForeignPtr finalizerFree typeStruct >>= return . Type
 
 
