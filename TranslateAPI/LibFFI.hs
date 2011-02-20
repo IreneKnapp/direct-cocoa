@@ -2,7 +2,7 @@
 module LibFFI (
                Type,
                CIF,
-               --cif,
+               cif,
                --call,
                typeUChar,
                typeSChar,
@@ -29,6 +29,24 @@ import Control.Monad
 import Foreign
 import Foreign.C
 import System.IO.Unsafe
+
+foreign import ccall "ffi_type_void" ffi_type_void :: Ptr ()
+foreign import ccall "ffi_type_uint8" ffi_type_uint8 :: Ptr ()
+foreign import ccall "ffi_type_sint8" ffi_type_sint8 :: Ptr ()
+foreign import ccall "ffi_type_uint16" ffi_type_uint16 :: Ptr ()
+foreign import ccall "ffi_type_sint16" ffi_type_sint16 :: Ptr ()
+foreign import ccall "ffi_type_uint32" ffi_type_uint32 :: Ptr ()
+foreign import ccall "ffi_type_sint32" ffi_type_sint32 :: Ptr ()
+foreign import ccall "ffi_type_uint64" ffi_type_uint64 :: Ptr ()
+foreign import ccall "ffi_type_sint64" ffi_type_sint64 :: Ptr ()
+foreign import ccall "ffi_type_float" ffi_type_float :: Ptr ()
+foreign import ccall "ffi_type_double" ffi_type_double :: Ptr ()
+foreign import ccall "ffi_type_longdouble" ffi_type_longdouble :: Ptr ()
+foreign import ccall "ffi_type_pointer" ffi_type_pointer :: Ptr ()
+foreign import ccall "ffi_prep_cif" ffi_prep_cif
+  :: Ptr () -> CInt -> CUInt -> Ptr () -> Ptr (Ptr ()) -> IO CInt
+foreign import ccall "ffi_call" ffi_call
+  :: Ptr () -> Ptr () -> Ptr () -> Ptr (Ptr ()) -> IO ()
 
 
 #ifdef x86_64_HOST_ARCH
@@ -158,67 +176,54 @@ data Type = Type (ForeignPtr ()) deriving (Eq)
 data CIF = CIF (ForeignPtr ())
 
 
-foreign import ccall "ffi_type_void" ffi_type_void :: Ptr ()
 typeVoid :: Type
 typeVoid = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_void
 
 
-foreign import ccall "ffi_type_uint8" ffi_type_uint8 :: Ptr ()
 typeUInt8 :: Type
 typeUInt8 = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_uint8
 
 
-foreign import ccall "ffi_type_sint8" ffi_type_sint8 :: Ptr ()
 typeSInt8 :: Type
 typeSInt8 = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_sint8
 
 
-foreign import ccall "ffi_type_uint16" ffi_type_uint16 :: Ptr ()
 typeUInt16 :: Type
 typeUInt16 = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_uint16
 
 
-foreign import ccall "ffi_type_sint16" ffi_type_sint16 :: Ptr ()
 typeSInt16 :: Type
 typeSInt16 = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_sint16
 
 
-foreign import ccall "ffi_type_uint32" ffi_type_uint32 :: Ptr ()
 typeUInt32 :: Type
 typeUInt32 = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_uint32
 
 
-foreign import ccall "ffi_type_sint32" ffi_type_sint32 :: Ptr ()
 typeSInt32 :: Type
 typeSInt32 = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_sint32
 
 
-foreign import ccall "ffi_type_uint64" ffi_type_uint64 :: Ptr ()
 typeUInt64 :: Type
 typeUInt64 = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_uint64
 
 
-foreign import ccall "ffi_type_sint64" ffi_type_sint64 :: Ptr ()
 typeSInt64 :: Type
 typeSInt64 = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_sint64
 
 
-foreign import ccall "ffi_type_float" ffi_type_float :: Ptr ()
 typeFloat :: Type
 typeFloat = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_float
 
 
-foreign import ccall "ffi_type_double" ffi_type_double :: Ptr ()
 typeDouble :: Type
 typeDouble = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_double
 
 
-foreign import ccall "ffi_type_longdouble" ffi_type_longdouble :: Ptr ()
 typeLongDouble :: Type
 typeLongDouble = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_longdouble
 
 
-foreign import ccall "ffi_type_pointer" ffi_type_pointer :: Ptr ()
 typePointer :: Type
 typePointer = Type $ unsafePerformIO $ newForeignPtr_ ffi_type_pointer
 
@@ -384,6 +389,9 @@ incrementTypeStructPtr typeStruct fieldTypeStructs =
   plusPtr typeStruct $ computeTypeStructSizeOneLevel fieldTypeStructs
 
 
+
+
+
 typeStruct :: [Type] -> Type
 typeStruct topLevelFieldTypes = unsafePerformIO $ do
   let topLevelTypeStructs = map typeStructFromType topLevelFieldTypes
@@ -393,16 +401,8 @@ typeStruct topLevelFieldTypes = unsafePerformIO $ do
   newForeignPtr finalizerFree typeStruct >>= return . Type
 
 
-foreign import ccall "ffi_prep_cif" ffi_prep_cif
-  :: Ptr () -> CInt -> CUInt -> Ptr () -> Ptr (Ptr ()) -> IO CInt
-
-{-
 cif :: ABI -> Type -> [Type] -> IO CIF
 cif abi returnType argumentTypes = do
   cif <- mallocBytes ...
   status <- ffi_prep_cif cif 
   newForeignPtr finalizerFree cif
--}
-
-foreign import ccall "ffi_call" ffi_call
-  :: Ptr () -> Ptr () -> Ptr () -> Ptr (Ptr ()) -> IO ()
