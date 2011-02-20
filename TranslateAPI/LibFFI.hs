@@ -382,7 +382,8 @@ typeStruct topLevelFieldTypes = unsafePerformIO $ do
       topLevelTypeStructs :: [Ptr ()]
       topLevelTypeStructs = map fromType topLevelFieldTypes
   
-  typeStruct <- mallocBytes $ computeSizeOneLevel topLevelTypeStructs
+  totalSize <- getSizeOneLevelAndDown topLevelTypeStructs
+  typeStruct <- mallocBytes totalSize
   pokeOneLevelAndDown typeStruct topLevelTypeStructs
   newForeignPtr finalizerFree typeStruct >>= return . Type
 
