@@ -25,6 +25,7 @@ module LibFFI (
               )
   where
 
+import Control.Monad
 import Foreign
 import Foreign.C
 import System.IO.Unsafe
@@ -304,45 +305,62 @@ typeStruct topLevelFieldTypes = unsafePerformIO $ do
   let fromType :: Type -> Ptr ()
       fromType (Type foundType) = unsafeForeignPtrToPtr foundType
       
-      sizeOneLevel :: [Ptr ()] -> Int
-      sizeOneLevel typeStructs = typeStructSizeFieldSize
-                                 + typeStructAlignmentFieldSize
-                                 + typeStructTypeFieldSize
-                                 + typeStructElementsFieldSize
-                                 + (1 + length typeStructs)
-                                   * typeStructEachElementFieldSize
+      computeSizeOneLevel :: [Ptr ()] -> Int
+      computeSizeOneLevel typeStructs = typeStructSizeFieldSize
+                                        + typeStructAlignmentFieldSize
+                                        + typeStructTypeFieldSize
+                                        + typeStructElementsFieldSize
+                                        + (1 + length typeStructs)
+                                          * typeStructEachElementFieldSize
       
-      sizeOneLevelAndDown :: [Ptr ()] -> Int
-      sizeOneLevelAndDown typeStructs = unsafePerformIO $ do
+      getSizeOneLevelAndDown :: [Ptr ()] -> IO Int
+      getSizeOneLevelAndDown typeStructs = do
+        let sizeOneLevel = computeSizeOneLevel typeStructs
         foldM (\result typeStruct -> do
                 if typeStructIsStaticallyAllocated typeStruct
-                  then result
-                  else result + sizeOneLevel ...
+                  then return result
+                  else do
+                    childTypeStructs <- peekOneLevel typeStruct
+                    sizeChild <- getSizeOneLevelAndDown childTypeStructs
+                    return $ result + sizeChild
                   )
-              (sizeOneLevel fieldTypes)
+              (computeSizeOneLevel typeStructs)
               typeStructs
       
-      pokeOneLevel :: Ptr () -> [Type] -> IO ()
-      pokeOneLevel theType fieldTypes = do
-        poke (typeStructSizeFieldPtr theType) 0
-        poke (typeStructAlignmentFieldPtr theType) 0
-        poke (typeStructTypeFieldPtr theType) 13
-        poke (typeStructElementsFieldPtr theType)
-             (typeStructGivenElementFieldPtr theType 0)
-        mapM (\(Type fieldType, index) ->
-                withForeignPtr
-                 fieldType
-                 (\fieldType ->
-                   poke (typeStructGivenElementFieldPtr theType index)
-                        fieldType))
-             $ zip fieldTypes [0..]
-        poke (typeStructGivenElementFieldPtr theType (length fieldTypes))
+      pokeOneLevel :: Ptr () -> [Ptr ()] -> IO ()
+      pokeOneLevel typeStruct fieldTypeStructs = do
+        poke (typeStructSizeFieldPtr typeStruct) 0
+        poke (typeStructAlignmentFieldPtr typeStruct) 0
+        poke (typeStructTypeFieldPtr typeStruct) 13
+        poke (typeStructElementsFieldPtr typeStruct)
+             (typeStructGivenElementFieldPtr typeStruct 0)
+        mapM_ (\(fieldTypeStruct, index) ->
+                 poke (typeStructGivenElementFieldPtr typeStruct index)
+                      fieldTypeStruct)
+              $ zip fieldTypeStructs [0..]
+        poke (typeStructGivenElementFieldPtr typeStruct
+                                             (length fieldTypeStructs))
              nullPtr
+      
+      pokeOneLevelAndDown :: Ptr () -> [Ptr ()] -> IO ()
+      pokeOneLevelAndDown typeStruct fieldTypeStructs = do
+        (newFieldTypeStructs, _)
+          <- foldM (\(newFieldTypeStructs, newFieldTypeStruct)
+                     fieldTypeStruct -> do
+                       immediateSubfields <- peekOneLevel fieldTypeStruct
+                       let nextNewFieldTypeStruct =
+                             incrementStructPtr newFieldTypeStruct
+                                                immediateSubfields
+                       return (newFieldTypeStructs ++ [newFieldTypeStruct],
+                               nextNewFieldTypeStruct))
+                   ([], incrementStructPtr typeStruct fieldTypeStructs)
+                   fieldTypeStructs
+        pokeOneLevel typeStruct newFieldTypeStructs
       
       peekIsStruct :: Ptr () -> IO Bool
       peekIsStruct typeStruct = do
         typeField <- peek $ typeStructTypeFieldPtr typeStruct
-        return typeField == 13
+        return $ typeField == 13
       
       peekOneLevel :: Ptr () -> IO [Ptr ()]
       peekOneLevel typeStruct = do
@@ -352,21 +370,21 @@ typeStruct topLevelFieldTypes = unsafePerformIO $ do
                 then return results
                 else loop (results ++ [possibleResult])
                           (plusPtr givenElementFieldPtr
-                                   (sizeof (undefined :: Ptr ())))
+                                   (sizeOf (undefined :: Ptr ())))
         firstGivenElementFieldPtr
           <- peek $ typeStructElementsFieldPtr typeStruct
         loop [] firstGivenElementFieldPtr
       
-      incrementStructPtr :: Ptr () -> [Type] -> Ptr ()
-      incrementStructPtr theType fieldTypes =
-        plusPtr theType $ sizeOneLevel fieldTypes
+      incrementStructPtr :: Ptr () -> [Ptr ()] -> Ptr ()
+      incrementStructPtr typeStruct fieldTypeStructs =
+        plusPtr typeStruct $ computeSizeOneLevel fieldTypeStructs
       
       topLevelTypeStructs :: [Ptr ()]
       topLevelTypeStructs = map fromType topLevelFieldTypes
   
-  theType <- mallocBytes $ sizeOneLevel topLevelTypeStructs
-  pokeOneLevel theType topLevelTypeStructs
-  newForeignPtr finalizerFree theType >>= return . Type
+  typeStruct <- mallocBytes $ computeSizeOneLevel topLevelTypeStructs
+  pokeOneLevelAndDown typeStruct topLevelTypeStructs
+  newForeignPtr finalizerFree typeStruct >>= return . Type
 
 
 foreign import ccall "ffi_prep_cif" ffi_prep_cif
