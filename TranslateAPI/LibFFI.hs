@@ -5,7 +5,7 @@ module LibFFI (
                Type,
                CIF,
                cif,
-               --call,
+               call,
                typeUChar,
                typeSChar,
                typeUShort,
@@ -522,3 +522,20 @@ cif abi returnType argumentTypes = do
       error $ case status of
                 BadTypedef -> "Bad type definition when constructing CIF."
                 BadABI -> "Bad ABI when constructing CIF."
+
+
+call :: CIF -> Ptr () -> Ptr () -> [Ptr ()] -> IO ()
+call theCIF functionPtr resultPtr argumentList = do
+  let fromCIF (CIF cifForeignStruct) = unsafeForeignPtrToPtr cifForeignStruct
+  allocaBytes (length argumentList * sizeOf (undefined :: Ptr ()))
+              (\argumentListPtr -> do
+                 mapM_ (\(argument, index) -> do
+                           poke (plusPtr
+                                  argumentListPtr
+                                  $ index * sizeOf (undefined :: Ptr ()))
+                                argument)
+                       $ zip argumentList [0..]
+                 ffi_call (fromCIF theCIF)
+                          functionPtr
+                          resultPtr
+                          argumentListPtr)
