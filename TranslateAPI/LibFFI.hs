@@ -1,5 +1,7 @@
 {-# LANGUAGE ForeignFunctionInterface, CPP #-}
 module LibFFI (
+               ABI,
+               defaultABI,
                Type,
                CIF,
                cif,
@@ -75,6 +77,18 @@ typeULong = typeUInt64
 typeSLong :: Type
 typeSLong = typeSInt64
 
+data ABI = SysV
+         | Unix64
+         deriving (Eq, Show)
+instance Enum ABI where
+  fromEnum SysV = 0
+  fromEnum Unix64 = 1
+  toEnum 0 = SysV
+  toEnum 1 = Unix64
+
+defaultABI :: ABI
+defaultABI = Unix64
+
 #elif i386_HOST_ARCH
 
 typeUChar :: Type
@@ -101,6 +115,18 @@ typeULong = typeUInt32
 typeSLong :: Type
 typeSLong = typeSInt32
 
+data ABI = SysV
+         | Unix64
+         deriving (Eq, Show)
+instance Enum ABI where
+  fromEnum SysV = 0
+  fromEnum Unix64 = 1
+  toEnum 0 = SysV
+  toEnum 1 = Unix64
+
+defaultABI :: ABI
+defaultABI = SysV
+
 #elif ppc_HOST_ARCH
 
 typeUChar :: Type
@@ -126,6 +152,21 @@ typeULong = typeUInt32
 
 typeSLong :: Type
 typeSLong = typeSInt32
+
+data ABI = SysV
+         | GCCSysV
+         | Linux64
+         deriving (Eq, Show)
+instance Enum ABI where
+  fromEnum SysV = 0
+  fromEnum GCCSysV = 1
+  fromEnum Linux64 = 2
+  toEnum 0 = SysV
+  toEnum 1 = GCCSysV
+  toEnum 2 = Linux64
+
+defaultABI :: ABI
+defaultABI = GCCSysV
 
 #elif ppc64_HOST_ARCH
 
@@ -163,6 +204,7 @@ typeSLong = typeSInt32
 data Status = OK
             | BadTypedef
             | BadABI
+            deriving (Eq)
 instance Enum Status where
   fromEnum OK = 0
   fromEnum BadTypedef = 1
@@ -284,21 +326,21 @@ typeStructGivenElementFieldPtr theType index =
 
 typeStructIsStaticallyAllocated :: Ptr () -> Bool
 typeStructIsStaticallyAllocated theType =
-  let fromType (Type foundType) = unsafeForeignPtrToPtr foundType
-  in case () of () | theType == fromType typeVoid -> True
-                   | theType == fromType typeUInt8 -> True
-                   | theType == fromType typeSInt8 -> True
-                   | theType == fromType typeUInt16 -> True
-                   | theType == fromType typeSInt16 -> True
-                   | theType == fromType typeUInt32 -> True
-                   | theType == fromType typeSInt32 -> True
-                   | theType == fromType typeUInt64 -> True
-                   | theType == fromType typeSInt64 -> True
-                   | otherwise -> False
+  case () of () | theType == typeStructFromType typeVoid -> True
+                | theType == typeStructFromType typeUInt8 -> True
+                | theType == typeStructFromType typeSInt8 -> True
+                | theType == typeStructFromType typeUInt16 -> True
+                | theType == typeStructFromType typeSInt16 -> True
+                | theType == typeStructFromType typeUInt32 -> True
+                | theType == typeStructFromType typeSInt32 -> True
+                | theType == typeStructFromType typeUInt64 -> True
+                | theType == typeStructFromType typeSInt64 -> True
+                | otherwise -> False
 
 
 typeStructFromType :: Type -> Ptr ()
 typeStructFromType (Type foundType) = unsafeForeignPtrToPtr foundType
+
 
 computeTypeStructSizeOneLevel :: [Ptr ()] -> Int
 computeTypeStructSizeOneLevel typeStructs = typeStructSizeFieldSize
@@ -389,7 +431,40 @@ incrementTypeStructPtr typeStruct fieldTypeStructs =
   plusPtr typeStruct $ computeTypeStructSizeOneLevel fieldTypeStructs
 
 
+typeShouldBeFlattenedInCIF :: Type -> Bool
+typeShouldBeFlattenedInCIF=
+  not . typeStructIsStaticallyAllocated . typeStructFromType
 
+
+cifStructHeaderSize :: Int
+cifStructHeaderSize = sizeOf (undefined :: CInt)
+                      + sizeOf (undefined :: CUInt)
+                      + sizeOf (undefined :: Ptr (Ptr ()))
+                      + sizeOf (undefined :: Ptr ())
+                      + sizeOf (undefined :: CUInt)
+                      + sizeOf (undefined :: CUInt)
+
+
+computeCIFStructArgumentTypeListSize :: [Type] -> Int
+computeCIFStructArgumentTypeListSize argumentTypes =
+  length argumentTypes * sizeOf (undefined :: Ptr ())
+
+
+getCIFStructSize :: (Type, [Type]) -> IO Int
+getCIFStructSize (returnType, argumentTypes) = do
+  let typesToFlatten = filter typeShouldBeFlattenedInCIF
+                              (returnType : argumentTypes)
+  sizeForTypesToFlatten
+    <- foldM (\result typeToFlatten -> do
+                immediateSubfields
+                  <- peekTypeStructOneLevel $ typeStructFromType typeToFlatten
+                size <- getTypeStructSizeOneLevelAndDown immediateSubfields
+                return $ result + size)
+             0
+             typesToFlatten
+  return $ cifStructHeaderSize
+           + computeCIFStructArgumentTypeListSize argumentTypes
+           + sizeForTypesToFlatten
 
 
 typeStruct :: [Type] -> Type
@@ -403,6 +478,47 @@ typeStruct topLevelFieldTypes = unsafePerformIO $ do
 
 cif :: ABI -> Type -> [Type] -> IO CIF
 cif abi returnType argumentTypes = do
-  cif <- mallocBytes ...
-  status <- ffi_prep_cif cif 
-  newForeignPtr finalizerFree cif
+  totalSize <- getCIFStructSize (returnType, argumentTypes)
+  cifStruct <- mallocBytes totalSize
+  let argumentTypeStructList =
+        plusPtr cifStruct cifStructHeaderSize
+      flattenedTypeStructArea =
+        plusPtr argumentTypeStructList
+                $ computeCIFStructArgumentTypeListSize argumentTypes
+  ((returnTypeStruct : argumentTypeStructs), _)
+    <- foldM (\(resultTypeStructs, oldTail) theType -> do
+                 if typeShouldBeFlattenedInCIF theType
+                   then do
+                     let oldTypeStruct = typeStructFromType theType
+                     immediateSubfields
+                       <- peekTypeStructOneLevel oldTypeStruct
+                     pokeTypeStructOneLevelAndDown oldTail
+                                                   immediateSubfields
+                     let newTail =
+                           incrementTypeStructPtr oldTail
+                                                  immediateSubfields
+                     return (resultTypeStructs ++ [oldTail], newTail)
+                   else return (resultTypeStructs
+                                ++ [typeStructFromType theType],
+                                oldTail))
+             ([], flattenedTypeStructArea)
+             (returnType : argumentTypes)
+  mapM_ (\(argumentTypeStruct, index) ->
+           poke (plusPtr argumentTypeStructList
+                         $ index * sizeOf (undefined :: Ptr ()))
+                argumentTypeStruct)
+        $ zip argumentTypeStructs [0..]
+  let abiCode = fromEnum abi
+  statusCode <- ffi_prep_cif cifStruct
+                             (fromIntegral abiCode)
+                             (fromIntegral $ length argumentTypeStructs)
+                             returnTypeStruct
+                             argumentTypeStructList
+  let status = toEnum $ fromIntegral statusCode
+  if status == OK
+    then newForeignPtr finalizerFree cifStruct >>= return . CIF
+    else do
+      free cifStruct
+      error $ case status of
+                BadTypedef -> "Bad type definition when constructing CIF."
+                BadABI -> "Bad ABI when constructing CIF."
