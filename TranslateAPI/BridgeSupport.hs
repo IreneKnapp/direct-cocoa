@@ -432,7 +432,9 @@ gotBeginElement ioRef elementName' attributes' = do
                          parseStateCurrentClass
                            = Just $ Class {
                                className = name,
-                               classMethods = []
+                               classMethods = [],
+                               classSuperclass = undefined,
+                               classSubclasses = undefined
                              },
                          parseStateCurrentMethodCollection
                            = Just []

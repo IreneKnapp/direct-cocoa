@@ -144,7 +144,9 @@ data StringConstantDefinition = StringConstant String String Bool
 
 data ClassDefinition = Class {
     className :: String,
-    classMethods :: [MethodDefinition]
+    classMethods :: [MethodDefinition],
+    classSuperclass :: Maybe String,
+    classSubclasses :: [String]
   }
   deriving (Show, Data, Typeable)
 
