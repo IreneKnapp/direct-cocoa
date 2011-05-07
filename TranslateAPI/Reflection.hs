@@ -23,6 +23,8 @@ foreign import ccall "class_getName" class_getName
     :: Ptr () -> IO CString
 foreign import ccall "class_getSuperclass" class_getSuperclass
     :: Ptr () -> IO (Ptr ())
+foreign import ccall "class_copyMethodList" class_copyMethodList
+    :: Ptr () -> Ptr (CUInt) -> IO (Ptr (Ptr ())
 
 
 loadReflectionData :: [Framework] -> IO [Framework]
@@ -123,6 +125,12 @@ loadAllClasses frameworks = do
                               found))
               ([], False)
               frameworks
+        frameworks
+          <- if not found
+               then do
+                 putStrLn $ "### Class not found."
+                 return frameworks
+               else return frameworks
         case Map.lookup theClass subclassMap of
           Nothing -> return frameworks
           Just subclassList -> visitClassList frameworks (depth + 1)
@@ -148,6 +156,13 @@ preLoadClass classPtr = do
       return $ Just (name, maybeSuperclassName)
 
 
+classIsIgnored :: String -> Bool
+classIsIgnored name =
+  (name !! 0 == '_')
+  || (name == "Object")
+  || (isSuffixOf "_ivars" name)
+
+
 loadClass :: Maybe ClassDefinition
           -> String
           -> Maybe String
@@ -167,8 +182,18 @@ loadClass maybeClassDefinition name maybeSuperclassName subclassNames = do
                                       classSuperclass = maybeSuperclassName,
                                       classSubclasses = subclassNames
                                     }
-  return classDefinition
-
-
-classIsIgnored :: String -> Bool
-classIsIgnored name = (name !! 0 == '_') || (name == "Object")
+  (methodBuffer, methodCount)
+    <- alloca (\countPtr ->
+                  methodBuffer <- class_copyMethodList classPtr countPtr
+                  count <- peek countPtr
+                  return (methodBuffer, count))
+  methods <- if methodBuffer == nullPtr
+               then return []
+               else do
+                 foldM (\(methods, found) index ->
+                           
+                 free methodBuffer
+                 return ...
+  return classDefinition {
+             classMethods = methods
+           }
