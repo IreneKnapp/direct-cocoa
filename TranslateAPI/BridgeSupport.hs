@@ -4,7 +4,7 @@ module BridgeSupport (loadBridgeSupport)
 import qualified Data.ByteString as BS
 import Data.Char
 import Data.IORef
-import qualified Data.Text.Lazy as TL
+import qualified Data.Text as T
 import Data.Maybe
 import Prelude hiding (error)
 import Text.XML.Expat.SAX
@@ -73,18 +73,18 @@ emptyFramework name = Framework {
                       }
 
 
-gotBeginElement :: IORef ParseState -> Name -> [Attribute] -> IO Bool
+gotBeginElement :: IORef ParseState -> Name -> [(Name, [Content])] -> IO Bool
 gotBeginElement ioRef elementName' attributes' = do
-  let elementName = TL.unpack $ nameLocalName $ elementName'
+  let elementName = T.unpack $ nameLocalName $ elementName'
       attributes
-        = map (\attribute ->
-                 (TL.unpack $ nameLocalName $ attributeName attribute,
+        = map (\(attributeName, attributeContent) ->
+                 (T.unpack $ nameLocalName attributeName,
                   concat $ map (\content ->
                                   case content of
-                                    ContentText text -> TL.unpack text
+                                    ContentText text -> T.unpack text
                                     ContentEntity text ->
-                                      "&" ++ TL.unpack text ++ ";")
-                               $ attributeContent attribute))
+                                      "&" ++ T.unpack text ++ ";")
+                               attributeContent))
               attributes'
   oldParseState <- readIORef ioRef
   let architecture :: Architecture
@@ -570,7 +570,7 @@ gotBeginElement ioRef elementName' attributes' = do
 
 gotEndElement :: IORef ParseState -> Name-> IO Bool
 gotEndElement ioRef elementName' = do
-  let elementName = TL.unpack $ nameLocalName $ elementName'
+  let elementName = T.unpack $ nameLocalName $ elementName'
   oldParseState <- readIORef ioRef
   let framework :: Framework
       framework = parseStateFramework oldParseState
