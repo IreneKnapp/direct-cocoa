@@ -24,7 +24,7 @@ foreign import ccall "class_getName" class_getName
 foreign import ccall "class_getSuperclass" class_getSuperclass
     :: Ptr () -> IO (Ptr ())
 foreign import ccall "class_copyMethodList" class_copyMethodList
-    :: Ptr () -> Ptr (CUInt) -> IO (Ptr (Ptr ())
+    :: Ptr () -> Ptr (CUInt) -> IO (Ptr (Ptr ()))
 
 
 loadReflectionData :: [Framework] -> IO [Framework]
@@ -101,6 +101,10 @@ loadAllClasses frameworks = do
                                   then return (classes ++ [foundClass], True)
                                   else if className foundClass == theClass
                                     then do
+                                      return (classes, True)
+                                      {- TODO: Once loadClass is implemented,
+                                               delete the line before and
+                                               uncomment this.
                                       foundClass
                                         <- loadClass (Just foundClass)
                                                      theClass
@@ -114,6 +118,7 @@ loadAllClasses frameworks = do
                                                         Just subclasses ->
                                                           subclasses)
                                       return (classes ++ [foundClass], True)
+                                      -}
                                     else return (classes ++ [foundClass],
                                                  False))
                             ([], False)
@@ -163,6 +168,7 @@ classIsIgnored name =
   || (isSuffixOf "_ivars" name)
 
 
+{- TODO: This seems to be half-finished, so I'm commenting it out for now.
 loadClass :: Maybe ClassDefinition
           -> String
           -> Maybe String
@@ -183,7 +189,7 @@ loadClass maybeClassDefinition name maybeSuperclassName subclassNames = do
                                       classSubclasses = subclassNames
                                     }
   (methodBuffer, methodCount)
-    <- alloca (\countPtr ->
+    <- alloca (\countPtr -> do
                   methodBuffer <- class_copyMethodList classPtr countPtr
                   count <- peek countPtr
                   return (methodBuffer, count))
@@ -191,9 +197,10 @@ loadClass maybeClassDefinition name maybeSuperclassName subclassNames = do
                then return []
                else do
                  foldM (\(methods, found) index ->
-                           
+                           ...
                  free methodBuffer
                  return ...
   return classDefinition {
              classMethods = methods
            }
+-}
