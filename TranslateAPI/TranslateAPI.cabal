@@ -2,9 +2,9 @@ Name:                TranslateAPI
 Version:             1.0
 Cabal-version:       >=1.2
 Build-type:          Simple
-Author:              Dan Knapp
-Maintainer:          dankna@gmail.com
-Homepage:            http://dankna.com/software/
+Author:              Irene Knapp
+Maintainer:          ireney.knapp@gmail.com
+Homepage:            http://ireneknapp.com/software/
 License:             BSD3
 License-file:        LICENSE
 Category:            System
